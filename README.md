@@ -7,8 +7,8 @@
 **A delegation an agent can prove it holds, and that a person can end.**
 
 RFC 8693 token exchange with nested `act`, sender-constrained by RFC 9449 DPoP.
-Short-lived tokens, a revocation list every enforcement point polls, and public
-keys anybody can verify against offline.
+Short-lived tokens, a revocation list an enforcement point can poll and act on,
+and public keys anybody can verify against offline.
 
 ## The gap it closes
 
@@ -131,9 +131,12 @@ Stated here rather than left to be discovered.
   here that needs a store before the service is trusted with a real incident.
 - **The DPoP replay cache is in memory too**, bounded by a 60-second window. For
   one window after a restart, a captured proof could be replayed once.
-- **No enforcement point verifies these tokens yet.** The library half (A2 in
-  the plan) is not built, so nothing in the estate currently reads what this
-  issues. Until then this service is correct and unconsumed.
+- **No enforcement point verifies these tokens on a request path yet.** The
+  library half (A2 in the plan) is built in both languages as of 2026-08-26,
+  and the revocation consumer beside it, so the estate can now read what this
+  issues and act on a revocation. What is still missing is a caller: no
+  deployed request path checks a delegation token or polls `/v1/revocations`.
+  Until one does, this service is correct and unconsumed.
 - **Where a `subject_token` comes from is out of scope.** This accepts one from
   a configured issuer; obtaining it from a customer's own IdP is a deployment
   shape that does not exist yet.

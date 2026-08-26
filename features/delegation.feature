@@ -8,8 +8,11 @@ Feature: A delegation that can be proved, and ended
   provable and what lets it be ended.
 
   Today the kill switch stops MONEY: tokenfuse returns 402 mid-run, before the
-  provider bills. Revoking a delegation stops AUTHORITY: the right to act on
-  somebody's behalf ends at every enforcement point at once.
+  provider bills. Revoking a delegation is meant to stop AUTHORITY: the right
+  to act on somebody's behalf ends wherever the revocation is consulted. This
+  file said "at every enforcement point at once" from the day it was written,
+  and until 2026-08-26 nothing anywhere consulted the list; a consumer exists
+  in both languages now, and no request path calls one yet.
 
   # @test:TestAnExchangeIssuesATokenBoundToTheProofsKeyWithTheChainTheRightWayRound
   Scenario: An agent is given the right to act for a person, briefly

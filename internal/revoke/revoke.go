@@ -1,4 +1,15 @@
-// Package revoke holds the revocation list every enforcement point consults.
+// Package revoke holds the revocation list enforcement points are meant to
+// consult, and which none of them consulted until 2026-08-26.
+//
+// # What that sentence used to say, and why the correction is part of the record
+//
+// It said "the revocation list every enforcement point consults", present
+// tense, from the day this package was written. Nothing polled `/v1/revocations`
+// in either language: tokenfuse's two doors passed a closure answering false and
+// no Go consumer set `delegation.Options.Revoked`. The consumer now exists on
+// both sides (`delegation.Revocations` in agent-stack-go,
+// `tokenfuse_delegation::revocations` in tokenfuse) and no request path calls it
+// yet, so the honest tense is the one above.
 //
 // # Why this is the point of the whole service
 //
