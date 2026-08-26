@@ -37,8 +37,6 @@ jobs:
           staticcheck ./...
       - name: tests
         run: go test ./... -race
-      - name: the algorithm comes from the key
-        run: ./scripts/the-algorithm-comes-from-the-key.sh
       - name: every scenario is bound to a test
         run: ./scripts/features-are-bound.sh
       - name: the README's numbers are true

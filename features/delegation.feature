@@ -27,65 +27,12 @@ Feature: A delegation that can be proved, and ended
     Then the chain grows at the end and keeps the person at its root, rather
       than asserting that the newest agent acts for them directly
 
-  # @test:TestTheOutermostActorIsTheImmediateOneAndNotTheRoot
-  Scenario: The direction that verifies cleanly and lies
-    Given a chain of a person and two agents
-    When it is written as an RFC 8693 actor claim
-    Then the outermost actor is the most recent one, because the reverse
-      asserts that the root delegated to nobody and validates perfectly
-
-  # @test:TestTheEstateChainCarriesTheSubjectAndTheRfcsActDoesNot
-  Scenario: Two specifications that keep different lists
-    Given an actor claim holding two agents
-    When it is turned into the chain this estate records
-    Then the person is at its head, because the RFC keeps the subject out of
-      the actor claim and agent-passport puts the root into the chain
-
   # @test:TestNoProofMeansNoToken
   Scenario: No proof, no token
     Given an exchange with no proof of key possession
     When it is made
     Then nothing is issued, because a token nobody is bound to is a bearer
       token and worth stealing
-
-  # @test:TestAProofSignedByAKeyOtherThanTheOneItCarriesIsRefused
-  Scenario: A proof must be signed by the key it presents
-    Given a proof carrying somebody else's public key
-    When it is checked
-    Then it is refused, because otherwise the binding is decorative
-
-  # @test:TestTheSameProofIsAcceptedOnceAndNotTwice
-  Scenario: A proof is for one request
-    Given a proof that has already been presented
-    When it is presented again
-    Then it is refused
-
-  # @test:TestAClientLeakingItsPrivateKeyIsRefusedRatherThanHelped
-  Scenario: A client leaking its own key is refused, not helped
-    Given a proof whose embedded key carries a private member
-    When it is checked
-    Then it is refused by name, because accepting it makes this service a
-      place private keys collect
-
-  # @test:TestATokenIsVerifiedWithTheKeyItNamesAndNoOther
-  Scenario: One leaked key does not open every issuer
-    Given a set holding two keys and a token naming the first but signed by
-      the second
-    When it is verified
-    Then it is refused, rather than each key being tried in turn
-
-  # @test:TestTheAlgorithmComesFromTheKeyAndNeverFromTheHeader
-  Scenario: The algorithm comes from the key
-    Given a token whose header claims a symmetric algorithm
-    When it is verified against an asymmetric key
-    Then it is refused, because the header is written by whoever sent it
-
-  # @test:TestAnRsaKeyCannotBeDowngradedEither
-  Scenario: And it comes from the key for RSA too
-    Given the same downgrade against an RSA key
-    When it is verified
-    Then it is refused, because closing this for one key type and not the
-      other closes the less likely half
 
   # @test:TestATokenFromAnUntrustedIssuerIsRefused
   Scenario: An issuer nobody configured
@@ -144,3 +91,31 @@ Feature: A delegation that can be proved, and ended
     When the process starts
     Then it refuses and names the variable, because a service trusting
       nothing looks healthy and a service trusting a default issues everything
+
+
+  # ---------------------------------------------------------------------
+  # Moved to TAIPANBOX/agent-stack-go, v0.8.0, package `delegation`.
+  #
+  # Eight scenarios described behaviour this service DEPENDS on and no longer
+  # OWNS: how a JWS is verified, how the algorithm allowlist is keyed, how a
+  # DPoP proof is checked, and which way an `act` chain nests. That code now
+  # lives in the shared module, because it is verified by five other services
+  # too and two implementations of "is this signature valid" that disagree is a
+  # hole nobody sees.
+  #
+  # They are NOT reproduced here as bound scenarios. A binding this
+  # repository's gate cannot check is a binding that reads as checked and is
+  # not, which is worse than not having it. They are named instead, so somebody
+  # reading this file knows where the behaviour is described and tested:
+  #
+  #   the outermost actor is the immediate one, not the root
+  #   the estate chain carries the subject and the RFC's act does not
+  #   a proof must be signed by the key it presents
+  #   a proof is accepted once and not twice
+  #   a client leaking its private key is refused, not helped
+  #   a token is verified with the key it names and no other
+  #   the algorithm comes from the key, never from the header, for EC and RSA
+  #
+  # What stays below is this service's own behaviour: the exchange, the
+  # revocation list, and refusing to start half-configured.
+  # ---------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # vouchryx
 
-![tests](https://img.shields.io/badge/tests-63-brightgreen)
+![tests](https://img.shields.io/badge/tests-26-brightgreen)
 ![go](https://img.shields.io/badge/go-1.26-blue)
 ![deps](https://img.shields.io/badge/runtime%20dependencies-1-blue)
 
@@ -59,19 +59,29 @@ A missing or malformed value **aborts the process** and names the variable. A
 token service that came up trusting nothing would issue nothing and look
 healthy; one that came up trusting a default would issue everything.
 
+## Where the crypto lives
+
+**Not here.** Signing, verification, the algorithm allowlist, the DPoP proof
+check and the `act` chain are `agent-stack-go/delegation`, from v0.8.0. This
+service imports it; so do `wardryx`, `idryx`, `scopyx`, `heraldyx` and
+`mockryx` when they verify what it issues.
+
+That is not tidiness. Two implementations of "is this signature valid" that
+disagree is a hole nobody sees until somebody walks through it, and the issuer
+having its own copy is the worst arrangement available: the one process that
+mints tokens would be the one process nobody else's tests cover.
+
+It lived here for exactly one day, which was the day it took to find out that a
+proof's key lookup could never match and that the chain lost its root. Both
+tests moved with the code.
+
 ## The four things that make this hard to get wrong
 
-**The algorithm comes from the key, never from the token header.** The header is
-written by whoever presents the token. Without this, an attacker fetches the
-public key from our own JWKS, signs an HMAC with those bytes as the secret, sets
-`alg` to `HS256`, and the token verifies. Held by
-`scripts/the-algorithm-comes-from-the-key.sh` as a property of the source, not
-only by a test.
-
-**A token is verified with the key it names and no other.** Trying each key in
-the set in turn would make one leaked key a skeleton key for every issuer this
-service trusts. *Found by a planted mutant: the first version of that test
-passed for the wrong reason.*
+**The algorithm comes from the key, never from the token header**, and **a
+token is verified with the key it names and no other**. Both now live in
+`agent-stack-go/delegation` with their tests; the second exists because a
+planted mutant survived here first, and the test that closed it passed for the
+wrong reason before that.
 
 **The chain grows at the right end.** RFC 8693 nests `act` current-first;
 agent-passport orders `on_behalf_of` root-first. Getting it backwards produces a
@@ -97,13 +107,13 @@ pick one.
 63 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
-**Ten mutants planted in the security paths; nine were caught immediately and
-one survived.** Closing it is the `ATokenIsVerifiedWithTheKeyItNamesAndNoOther`
-test above.
+**Ten mutants were planted in the security paths while that code lived here;
+nine were caught immediately and one survived.** Closing it is
+`TestATokenIsVerifiedWithTheKeyItNamesAndNoOther`, which moved to
+`agent-stack-go` with the code it guards.
 
-Coverage: `revoke` 95%, `config` 93%, `dpop` 88%, `exchange` 87%, `api` 75%,
-`jose` 66%. The uncovered part of `jose` is error rendering on malformed input,
-which the fuzzing this repo does not yet do would reach better than a test.
+Coverage: `revoke` 95%, `config` 93%, `api` 75%. The JOSE, DPoP and chain
+coverage moved with the code to `agent-stack-go`.
 
 ```bash
 go test ./...
@@ -134,6 +144,11 @@ Stated here rather than left to be discovered.
   bind is routable; terminating TLS is the deployment's job and is not
   demonstrated.
 - **The name is a placeholder** and was never confirmed.
+- **`scripts/the-algorithm-comes-from-the-key.sh` no longer measures anything
+  here**, because the file it reads moved. It is removed rather than left
+  reporting OK on nothing: a gate whose subject is gone must say so, and the
+  simplest way to say it is not to have it. The rule it held is an invariant of
+  `agent-stack-go` now, with its own gate there.
 
 ## Licence
 
