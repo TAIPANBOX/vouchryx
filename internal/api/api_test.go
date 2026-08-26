@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -462,11 +463,81 @@ func TestARefusalAfterTheSubjectIsKnownReachesTheRecord(t *testing.T) {
 			"An operator asking why an exchange failed has this file and nothing else.\n%s",
 			len(strings.Split(strings.TrimSpace(string(raw)), "\n")), raw)
 	}
-	if found.AgentID != "user://acme/alice" {
-		t.Fatalf("the refusal names %q, and the subject this service verified was "+
-			"user://acme/alice", found.AgentID)
+	// The ACTOR, not the subject. This test asserted the subject when it was
+	// written earlier the same day, and that was wrong for a reason no test
+	// caught: SPEC 6.1 constrains `agent_id` to `agent://`, and the subject of a
+	// human-to-agent delegation is `user://`. So the fix that made refusals
+	// reach the record made them reach it malformed, and `agent-conform`
+	// refused every line. The human is not lost: `on_behalf_of` carries the
+	// whole chain with them at its head.
+	if found.AgentID != "agent://acme/triage" {
+		t.Fatalf("the refusal names %q, and the agent that asked for the authority "+
+			"was agent://acme/triage. on_behalf_of carries %v.",
+			found.AgentID, found.OnBehalfOf)
 	}
 	if found.Data["reason"] != "bad_delegation_chain" {
 		t.Fatalf("the refusal does not say why: %v", found.Data)
 	}
 }
+
+// Every event this service writes must be one the estate can read.
+//
+// SPEC 6.1 constrains `agent_id` to `^agent://<domain>/<path>$`, and this
+// service wrote the delegation's SUBJECT there. In the canonical case that is a
+// human, `user://acme/alice`, so every `delegation_issued` for a human
+// delegating to an agent failed schema validation. Confirmed with the estate's
+// own tool, not by reading the pattern:
+//
+//	$ agent-conform vx.ndjson
+//	FAIL vx.ndjson:1 (event v0.2): at '/agent_id':
+//	     'user://acme/alice' does not match pattern '^agent://[a-z0-9.-]+/...'
+//
+// The right subject is the ACTOR: the agent that receives the authority. That
+// is what the record is about, it is always an `agent://`, and the human is not
+// lost, because `on_behalf_of` already carries the whole chain root-first with
+// the subject at its head.
+func TestEveryEventThisServiceWritesNamesAnAgent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.ndjson")
+	w, err := event.NewWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	s := newStand(t)
+	s.srv.Events = w
+
+	// A human delegating to an agent: the case this service exists for.
+	rec, _ := s.exchange(t,
+		s.input(t, "user://acme/alice", nil),
+		s.input(t, "agent://acme/triage", nil),
+		s.proof(t, "p-agentid"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the stand did not issue, so this test proves nothing: %s", rec.Body)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("nothing was written: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		t.Fatal("the exchange wrote no event")
+	}
+	for i, line := range lines {
+		e, err := event.Unmarshal([]byte(line))
+		if err != nil {
+			t.Fatalf("line %d is not an event: %v", i+1, err)
+		}
+		if !agentIDPattern.MatchString(e.AgentID) {
+			t.Fatalf("line %d (%s) names %q, which SPEC 6.1 does not allow as an "+
+				"agent_id: it must be agent://<domain>/<path>. The estate's own "+
+				"conform tool refuses this line.\n"+
+				"on_behalf_of carries %v, so the human is recorded either way.",
+				i+1, e.Type, e.AgentID, e.OnBehalfOf)
+		}
+	}
+}
+
+var agentIDPattern = regexp.MustCompile(`^agent://[a-z0-9.-]+/[a-z0-9._/-]+$`)

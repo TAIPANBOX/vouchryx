@@ -85,6 +85,14 @@ Feature: A delegation that can be proved, and ended
     Then it carries no private member, because one there is the signing key,
       in public, for ever
 
+  # @test:TestEveryEventThisServiceWritesNamesAnAgent
+  Scenario: An event this estate can read
+    Given a human delegating to an agent, which is what this service is for
+    When the exchange is recorded
+    Then the record names the AGENT that received the authority, because
+      SPEC 6.1 allows no other kind of subject, and the human is in
+      on_behalf_of where the whole chain already is
+
   # @test:TestARefusalAfterTheSubjectIsKnownReachesTheRecord
   Scenario: A refusal an operator can read
     Given an exchange that fails after its subject token has verified
