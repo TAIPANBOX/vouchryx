@@ -1,6 +1,6 @@
 # vouchryx
 
-![tests](https://img.shields.io/badge/tests-26-brightgreen)
+![tests](https://img.shields.io/badge/tests-27-brightgreen)
 ![go](https://img.shields.io/badge/go-1.26-blue)
 ![deps](https://img.shields.io/badge/runtime%20dependencies-1-blue)
 
