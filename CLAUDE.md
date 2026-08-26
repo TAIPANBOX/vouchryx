@@ -129,3 +129,36 @@ not a convenience.
 - **A TTL longer than the cap.** A long-lived delegation token is the thing this
   service exists to avoid.
 - **Any path that reads a private key into something serialisable.**
+
+11. **A refusal that reaches nobody is not a refusal, it is a silence.** This
+    package's doc has promised since it was written that a refusal's detail
+    "goes to the event stream, where an operator can read it and an attacker
+    cannot". Measured 2026-08-26 against a running instance: after a refused
+    exchange the events file was zero bytes and the service log said nothing.
+    The attacker half held. The operator half was false for eleven of the
+    fifteen ways out.
+
+    Five `deny` sites pass an empty subject, which `emit` drops on purpose and
+    still does: SPEC 6.1 will not have a non-agent `agent_id`, and inventing one
+    would put a fiction in an agent's history. Six further paths never reached
+    `deny` at all, two of them 500s, so an operator whose issuer was failing
+    outright had nothing to read anywhere.
+
+    **The answer was a second channel, not a looser first one.** `refuse` is now
+    the only thing in this package that writes a non-success response. It always
+    logs, it needs no identity to do so, and the event is still emitted only when
+    there is an agent to file it under. The RESPONSE is unchanged and stays an
+    oracle-free OAuth code: which check failed is a diagnosis for whoever runs
+    the service and a map for whoever was refused.
+
+    The log reason is deliberately NOT the OAuth code. `unsupported_grant_type`
+    is both a legitimate RFC 6749 code and a plausible reason string, and the
+    test that asserts the reason never reaches the caller tripped on that
+    coincidence before the two were separated.
+    *(gate: `scripts/every-refusal-reaches-the-operator.sh`, which DISCOVERS
+    every `writeJSON` in the HTTP surface and requires every non-success one to
+    sit inside `refuse`. A status held in a variable counts as not-a-success,
+    because what it will be at run time cannot be read there. Three cases in
+    `gates-have-teeth.sh`. Test: `TestEveryRefusalReachesTheOperator`, three
+    kinds, each red before the change with an empty log. Scenario:
+    `features/delegation.feature`)*

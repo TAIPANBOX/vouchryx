@@ -31,8 +31,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/TAIPANBOX/agent-stack-go/delegation"
@@ -107,7 +110,7 @@ func (s *Server) revocations(w http.ResponseWriter, _ *http.Request) {
 // token is RFC 8693 token delegation.
 func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		oauthError(w, http.StatusBadRequest, "invalid_request")
+		refuse(w, http.StatusBadRequest, "invalid_request", "unparseable_form", map[string]any{"detail": err.Error()})
 		return
 	}
 	// The SUBJECT is the first argument, and it is `""` at every call site that
@@ -124,11 +127,11 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	// false for every refusal this service ever made.
 	deny := func(sub, reason string, detail map[string]any) {
 		s.emit("delegation_denied", sub, nil, merge(detail, map[string]any{"reason": reason}))
-		oauthError(w, http.StatusBadRequest, "invalid_grant")
+		refuse(w, http.StatusBadRequest, "invalid_grant", reason, detail)
 	}
 
 	if r.PostForm.Get("grant_type") != GrantType {
-		oauthError(w, http.StatusBadRequest, "unsupported_grant_type")
+		refuse(w, http.StatusBadRequest, "unsupported_grant_type", "grant_type_not_implemented", map[string]any{"asked_for": r.PostForm.Get("grant_type")})
 		return
 	}
 
@@ -193,7 +196,9 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	jti, err := newJTI()
 	if err != nil {
-		oauthError(w, http.StatusInternalServerError, "server_error")
+		// A 500 with nothing anywhere is the worst of the set: the caller is
+		// told to retry and the operator is told nothing at all.
+		refuse(w, http.StatusInternalServerError, "server_error", "no_random_for_jti", map[string]any{"detail": err.Error()})
 		return
 	}
 	claims := map[string]any{
@@ -214,7 +219,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 
 	signed, err := delegation.SignES256(s.Cfg.SigningKey, s.Cfg.KeyID, claims)
 	if err != nil {
-		oauthError(w, http.StatusInternalServerError, "server_error")
+		refuse(w, http.StatusInternalServerError, "server_error", "signing_failed", map[string]any{"detail": err.Error(), "kid": s.Cfg.KeyID})
 		return
 	}
 
@@ -316,18 +321,18 @@ type revokeBody struct {
 func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 	var body revokeBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		oauthError(w, http.StatusBadRequest, "invalid_request")
+		refuse(w, http.StatusBadRequest, "invalid_request", "unreadable_revocation_body", map[string]any{"detail": err.Error()})
 		return
 	}
 	// The same two fields the tokenfuse declassify endpoint requires, for the
 	// same reason: a revocation with no actor and no reason is an outage
 	// somebody has to reconstruct from timing.
 	if body.Actor == "" || body.Reason == "" {
-		oauthError(w, http.StatusBadRequest, "invalid_request")
+		refuse(w, http.StatusBadRequest, "invalid_request", "revocation_names_no_actor_or_reason", nil)
 		return
 	}
 	if body.JTI == "" && body.Subject == "" {
-		oauthError(w, http.StatusBadRequest, "invalid_request")
+		refuse(w, http.StatusBadRequest, "invalid_request", "revocation_names_nobody", nil)
 		return
 	}
 	now := s.now()
@@ -451,7 +456,45 @@ func audienceMatches(aud any, want string) bool {
 	return false
 }
 
-func oauthError(w http.ResponseWriter, status int, code string) {
+// refuse is the ONLY way a request leaves this service unhappy.
+//
+// # Two channels, because they answer to two different people
+//
+// The RESPONSE stays what it always was: a coarse OAuth code and nothing about
+// which check failed. Told which of eight checks failed, an attacker walks them
+// one at a time, so the response must not narrate.
+//
+// The OPERATOR is the other half of that sentence, and it was false. Measured
+// 2026-08-26 against a running instance: after a refused exchange the events
+// file was zero bytes and the service log said nothing at all. Five of the nine
+// `deny` sites pass an empty subject, which `emit` correctly drops because SPEC
+// 6.1 will not have a non-agent `agent_id`; and six further refusal paths never
+// reached `deny` at all, two of them 500s. An operator whose issuer was
+// refusing every exchange, or failing outright, had nothing to read anywhere.
+//
+// Dropping the EVENT is still right and is unchanged: inventing an `agent_id`
+// to file a refusal under would put a fiction in an agent's history. What was
+// missing was the second channel, and a log line is it. It reaches the operator,
+// it reaches nobody else, and it needs no identity to exist.
+//
+// `reason` is the same vocabulary the events use, so one grep answers the
+// question across both channels.
+func refuse(w http.ResponseWriter, status int, code, reason string, detail map[string]any) {
+	if len(detail) > 0 {
+		keys := make([]string, 0, len(detail))
+		for k := range detail {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, fmt.Sprintf("%s=%v", k, detail[k]))
+		}
+		log.Printf("vouchryx: refused (%s): %s [%s]", code, reason, strings.Join(parts, " "))
+		writeJSON(w, status, map[string]any{"error": code})
+		return
+	}
+	log.Printf("vouchryx: refused (%s): %s", code, reason)
 	writeJSON(w, status, map[string]any{"error": code})
 }
 
