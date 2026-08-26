@@ -1,0 +1,463 @@
+// Package api is this service's whole HTTP surface: four routes, and no more.
+//
+// # Deliberately thin
+//
+// `POST /v1/token` exchanges, `POST /v1/revoke` revokes, `GET /v1/revocations`
+// is what enforcement points poll, and `GET /.well-known/jwks.json` is how they
+// verify offline. There is no endpoint that introspects a token, and that is a
+// decision rather than an omission: introspection puts this service on the
+// request path of every enforcement point at once, and the plan's whole reason
+// for a library-side verifier is that wardryx runs at a 3.2 ms p50 and must not
+// pay a network round trip per decision.
+//
+// # What a refusal says, and what it does not
+//
+// Errors are the OAuth shapes (`invalid_request`, `invalid_grant`) with no
+// detail about WHICH check failed. A verifier that narrates its reasoning to
+// whoever presented the token is an oracle: told which of eight checks failed,
+// an attacker walks them one at a time. The detail goes to the event stream,
+// where an operator can read it and an attacker cannot.
+package api
+
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/TAIPANBOX/agent-stack-go/event"
+	"github.com/TAIPANBOX/vouchryx/internal/config"
+	"github.com/TAIPANBOX/vouchryx/internal/dpop"
+	"github.com/TAIPANBOX/vouchryx/internal/exchange"
+	"github.com/TAIPANBOX/vouchryx/internal/jose"
+	"github.com/TAIPANBOX/vouchryx/internal/revoke"
+)
+
+// GrantType is the one grant this service implements (RFC 8693 section 2.1).
+const GrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
+
+// TokenType is the `issued_token_type` this service returns.
+const TokenType = "urn:ietf:params:oauth:token-type:jwt"
+
+// Source is the `source` on every event this service writes, and it is the row
+// SPEC 6.2 registers for it.
+const Source = "vouchryx"
+
+// Server holds what the handlers need. Nothing here is mutable except the
+// revocation list and the proof cache, both of which own their own locking.
+type Server struct {
+	Cfg    config.Config
+	Revs   *revoke.List
+	Proofs *dpop.Verifier
+	Events *event.Writer
+	// Now is injected so every time-dependent behaviour is testable without
+	// sleeping. A test that has to sleep to prove an expiry is a test nobody
+	// runs.
+	Now func() time.Time
+}
+
+// Routes returns the mux.
+func (s *Server) Routes() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/token", s.token)
+	mux.HandleFunc("POST /v1/revoke", s.revokeHandler)
+	mux.HandleFunc("GET /v1/revocations", s.revocations)
+	mux.HandleFunc("GET /.well-known/jwks.json", s.jwks)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	return mux
+}
+
+func (s *Server) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+// jwks publishes the public half of the signing key.
+//
+// `Cfg.PublicSet` builds it from the public key only. There is no path in this
+// package that can serialize a private key, which is why the check lives in
+// `jose.FromPublic`'s signature rather than in a filter here: a filter can be
+// forgotten, a type cannot.
+func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.Cfg.PublicSet())
+}
+
+func (s *Server) revocations(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"revocations": s.Revs.Active(s.now()),
+		// So a poller can tell a list it fetched from one it failed to fetch:
+		// an empty list and an unreachable service look identical otherwise,
+		// and one of them means every revoked token is live.
+		"as_of": s.now().Unix(),
+	})
+}
+
+// token is RFC 8693 token exchange.
+func (s *Server) token(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		oauthError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	deny := func(reason string, detail map[string]any) {
+		s.emit("delegation_denied", "", nil, merge(detail, map[string]any{"reason": reason}))
+		oauthError(w, http.StatusBadRequest, "invalid_grant")
+	}
+
+	if r.PostForm.Get("grant_type") != GrantType {
+		oauthError(w, http.StatusBadRequest, "unsupported_grant_type")
+		return
+	}
+
+	// The DPoP proof first: it costs least and it decides what the token is
+	// bound to, so a request that cannot be bound is refused before anything
+	// expensive is verified.
+	proof := r.Header.Get("DPoP")
+	if proof == "" {
+		deny("no_dpop_proof", nil)
+		return
+	}
+	thumb, err := s.Proofs.Check(proof, r.Method, absoluteURL(r), s.now())
+	if err != nil {
+		deny("bad_dpop_proof", map[string]any{"detail": err.Error()})
+		return
+	}
+
+	subject, subIss, err := s.verifyInput(r.PostForm.Get("subject_token"))
+	if err != nil {
+		deny("bad_subject_token", map[string]any{"detail": err.Error()})
+		return
+	}
+	actor, _, err := s.verifyInput(r.PostForm.Get("actor_token"))
+	if err != nil {
+		deny("bad_actor_token", map[string]any{"detail": err.Error()})
+		return
+	}
+
+	sub, _ := subject["sub"].(string)
+	actorSub, _ := actor["sub"].(string)
+	if sub == "" || actorSub == "" {
+		deny("token_names_no_subject", nil)
+		return
+	}
+
+	// The chain the SUBJECT token already carries, extended by this actor. Read
+	// with `ReadAct` so a chain that arrived from another exchange keeps its
+	// direction: RFC 8693 nests current-first and the estate records root-first,
+	// and a reversal here would produce a token that verifies and lies.
+	var prior []string
+	if raw, ok := subject["act"]; ok {
+		var act exchange.Act
+		if b, err := json.Marshal(raw); err == nil {
+			_ = json.Unmarshal(b, &act)
+		}
+		if prior, err = exchange.ReadAct(&act); err != nil {
+			deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
+			return
+		}
+	}
+	chain, err := exchange.Extend(prior, actorSub)
+	if err != nil {
+		deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
+		return
+	}
+	act, err := exchange.BuildAct(chain)
+	if err != nil {
+		deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
+		return
+	}
+
+	now := s.now()
+	jti, err := newJTI()
+	if err != nil {
+		oauthError(w, http.StatusInternalServerError, "server_error")
+		return
+	}
+	claims := map[string]any{
+		"iss": s.Cfg.Issuer,
+		"sub": sub,
+		"aud": firstNonEmpty(r.PostForm.Get("audience"), s.Cfg.Issuer),
+		"iat": now.Unix(),
+		"exp": now.Add(s.Cfg.TTL).Unix(),
+		"jti": jti,
+		"act": act,
+		// RFC 9449 section 6: the token is bound to the key that proved
+		// possession. Without this the whole exchange issues bearer tokens.
+		"cnf": map[string]any{"jkt": thumb},
+	}
+	if scope := r.PostForm.Get("scope"); scope != "" {
+		claims["scope"] = scope
+	}
+
+	signed, err := jose.SignES256(s.Cfg.SigningKey, s.Cfg.KeyID, claims)
+	if err != nil {
+		oauthError(w, http.StatusInternalServerError, "server_error")
+		return
+	}
+
+	// The RECORD's chain is not the RFC's: `act` holds actors only, and
+	// agent-passport's `on_behalf_of` is root-first WITH the subject at its
+	// head. Handing `chain` straight to the event would write a delegation with
+	// the human missing from it.
+	recorded, err := exchange.Chain(sub, act)
+	if err != nil {
+		deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
+		return
+	}
+	s.emit("delegation_issued", sub, recorded, map[string]any{
+		"jti":            jti,
+		"cnf_jkt":        thumb,
+		"subject_issuer": subIss,
+		"expires_at":     now.Add(s.Cfg.TTL).Unix(),
+		"chain_depth":    len(chain),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access_token":      signed,
+		"issued_token_type": TokenType,
+		"token_type":        "DPoP",
+		"expires_in":        int(s.Cfg.TTL.Seconds()),
+	})
+}
+
+// verifyInput checks one input token against the issuer it names.
+//
+// The issuer is looked up by the token's OWN `iss` and then the token is
+// verified against that issuer's keys, which is the right order: trying every
+// trusted issuer's keys in turn would mean one compromised issuer could mint
+// tokens claiming to be from any of the others.
+func (s *Server) verifyInput(token string) (map[string]any, string, error) {
+	if token == "" {
+		return nil, "", fmt.Errorf("no token")
+	}
+	iss, err := unverifiedIssuer(token)
+	if err != nil {
+		return nil, "", err
+	}
+	issuer, ok := s.Cfg.FindIssuer(iss)
+	if !ok {
+		return nil, "", fmt.Errorf("issuer not trusted")
+	}
+	claims, err := jose.Verify(token, issuer.Keys)
+	if err != nil {
+		return nil, "", err
+	}
+	if !audienceMatches(claims["aud"], issuer.Audience) {
+		return nil, "", fmt.Errorf("audience")
+	}
+	exp, ok := claims["exp"].(float64)
+	if !ok {
+		// A token with no expiry is a permanent credential, and exchanging one
+		// for a short-lived token would launder it into something that looks
+		// disciplined.
+		return nil, "", fmt.Errorf("no exp")
+	}
+	if s.now().Unix() >= int64(exp) {
+		return nil, "", fmt.Errorf("expired")
+	}
+	return claims, iss, nil
+}
+
+// unverifiedIssuer reads `iss` from an unverified token, to choose which keys
+// to verify it with. Named `unverified` because that is what it is: nothing
+// read here is trusted, and the only use of the value is a lookup that either
+// finds a configured issuer or refuses.
+func unverifiedIssuer(token string) (string, error) {
+	parts := splitThree(token)
+	if parts == nil {
+		return "", fmt.Errorf("not a jws")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("not a jws")
+	}
+	var claims struct {
+		Iss string `json:"iss"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil || claims.Iss == "" {
+		return "", fmt.Errorf("no iss")
+	}
+	return claims.Iss, nil
+}
+
+type revokeBody struct {
+	JTI          string `json:"jti"`
+	Subject      string `json:"subject"`
+	Actor        string `json:"actor"`
+	Reason       string `json:"reason"`
+	ExpiresInSec int    `json:"expires_in_seconds"`
+}
+
+func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
+	var body revokeBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		oauthError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	// The same two fields the tokenfuse declassify endpoint requires, for the
+	// same reason: a revocation with no actor and no reason is an outage
+	// somebody has to reconstruct from timing.
+	if body.Actor == "" || body.Reason == "" {
+		oauthError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if body.JTI == "" && body.Subject == "" {
+		oauthError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	now := s.now()
+	ttl := time.Duration(body.ExpiresInSec) * time.Second
+	if ttl <= 0 || ttl > config.MaxTTL {
+		// An entry only has to outlive the longest token it could match.
+		ttl = config.MaxTTL
+	}
+	e := revoke.Entry{
+		JTI:     body.JTI,
+		Subject: body.Subject,
+		Expires: now.Add(ttl).Unix(),
+		Actor:   body.Actor,
+		Reason:  body.Reason,
+	}
+	if body.Subject != "" {
+		e.IssuedBefore = now.Unix()
+	}
+	s.Revs.Add(e)
+	s.emit("delegation_revoked", body.Subject, nil, map[string]any{
+		"jti":     body.JTI,
+		"subject": body.Subject,
+		"actor":   body.Actor,
+		"reason":  body.Reason,
+		"expires": e.Expires,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"revoked": true, "expires": e.Expires})
+}
+
+// emit writes one agent-event, and never fails the request when it cannot.
+//
+// Fail-open on the record, deliberately and in one direction only: a service
+// that refused to issue because it could not write a line would turn a full
+// disk into an estate-wide outage. What it must never do is the reverse, issue
+// and then decide not to record, which is why every emit sits after the decision
+// and before the response.
+func (s *Server) emit(kind, agentID string, chain []string, data map[string]any) {
+	if s.Events == nil {
+		return
+	}
+	if agentID == "" {
+		// SPEC 6.1 forbids inventing a subject, and `Writer` would refuse it
+		// anyway. A denial with no identifiable subject is counted by the
+		// caller's own logs rather than fabricated into the record.
+		return
+	}
+	_ = s.Events.Write(event.Event{
+		Schema:     "taipanbox.dev/agent-event/v0.2",
+		TS:         s.now().UTC().Format(time.RFC3339),
+		Source:     Source,
+		Type:       kind,
+		AgentID:    agentID,
+		Severity:   severityFor(kind),
+		OnBehalfOf: chain,
+		Data:       data,
+	})
+}
+
+// severityFor is fixed per type here, exactly as it is in tokenfuse's own
+// crate, so no call site can pick one: a severity a caller chooses drifts
+// between call sites, and every downstream count of "how many high events"
+// then measures who wrote the call rather than what happened.
+func severityFor(kind string) string {
+	switch kind {
+	case "delegation_denied", "delegation_revoked":
+		return "high"
+	default:
+		// An issued delegation is this service working. Paging for the design
+		// succeeding is how an operator learns to filter the sender, which
+		// tokenfuse recorded about its own `breaker_tripped` on 2026-08-03.
+		return "info"
+	}
+}
+
+func newJTI() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b[:]), nil
+}
+
+func absoluteURL(r *http.Request) string {
+	scheme := "https"
+	if r.TLS == nil {
+		scheme = "http"
+	}
+	return scheme + "://" + r.Host + r.URL.Path
+}
+
+func audienceMatches(aud any, want string) bool {
+	if want == "" {
+		return true
+	}
+	switch v := aud.(type) {
+	case string:
+		return v == want
+	case []any:
+		for _, one := range v {
+			if s, ok := one.(string); ok && s == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func oauthError(w http.ResponseWriter, status int, code string) {
+	writeJSON(w, status, map[string]any{"error": code})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func merge(a, b map[string]any) map[string]any {
+	out := make(map[string]any, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func splitThree(token string) []string {
+	parts := make([]string, 0, 3)
+	start := 0
+	for i := 0; i < len(token); i++ {
+		if token[i] == '.' {
+			parts = append(parts, token[start:i])
+			start = i + 1
+			if len(parts) == 2 {
+				break
+			}
+		}
+	}
+	if len(parts) != 2 {
+		return nil
+	}
+	return append(parts, token[start:])
+}

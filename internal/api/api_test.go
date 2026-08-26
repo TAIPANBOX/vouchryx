@@ -1,0 +1,403 @@
+package api
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/TAIPANBOX/vouchryx/internal/config"
+	"github.com/TAIPANBOX/vouchryx/internal/dpop"
+	"github.com/TAIPANBOX/vouchryx/internal/exchange"
+	"github.com/TAIPANBOX/vouchryx/internal/jose"
+	"github.com/TAIPANBOX/vouchryx/internal/revoke"
+)
+
+const (
+	idpIss   = "https://idp.acme.example"
+	audience = "https://vouchryx.acme.example"
+	ourIss   = "https://vouchryx.acme.example"
+)
+
+type stand struct {
+	srv    *Server
+	idp    *ecdsa.PrivateKey
+	holder *ecdsa.PrivateKey
+	now    time.Time
+}
+
+func newStand(t *testing.T) *stand {
+	t.Helper()
+	idp, signing, holder := key(t), key(t), key(t)
+	kid, err := jose.Thumbprint(jose.FromPublic(&signing.PublicKey, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	return &stand{
+		idp:    idp,
+		holder: holder,
+		now:    now,
+		srv: &Server{
+			Cfg: config.Config{
+				Issuer:     ourIss,
+				SigningKey: signing,
+				KeyID:      kid,
+				TTL:        config.DefaultTTL,
+				Trusted: []config.Issuer{{
+					Iss:      idpIss,
+					Audience: audience,
+					Keys:     jose.Set{Keys: []jose.JWK{jose.FromPublic(&idp.PublicKey, "idp-1")}},
+				}},
+			},
+			Revs:   revoke.New(),
+			Proofs: dpop.NewVerifier(),
+			Now:    func() time.Time { return now },
+		},
+	}
+}
+
+func key(t *testing.T) *ecdsa.PrivateKey {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
+// input mints a token the customer's IdP would have issued.
+func (s *stand) input(t *testing.T, sub string, over map[string]any) string {
+	t.Helper()
+	claims := map[string]any{
+		"iss": idpIss, "sub": sub, "aud": audience,
+		"iat": s.now.Unix(), "exp": s.now.Add(time.Hour).Unix(),
+	}
+	for k, v := range over {
+		if v == nil {
+			delete(claims, k)
+			continue
+		}
+		claims[k] = v
+	}
+	tok, err := jose.SignES256(s.idp, "idp-1", claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
+func (s *stand) proof(t *testing.T, jti string) string {
+	t.Helper()
+	header, _ := json.Marshal(map[string]any{
+		"typ": "dpop+jwt", "alg": "ES256", "jwk": jose.FromPublic(&s.holder.PublicKey, ""),
+	})
+	claims, _ := json.Marshal(map[string]any{
+		"htm": "POST", "htu": "http://vouchryx.test/v1/token",
+		"iat": s.now.Unix(), "jti": jti,
+	})
+	signing := enc(header) + "." + enc(claims)
+	sum := sha256.Sum256([]byte(signing))
+	r, sg, err := ecdsa.Sign(rand.Reader, s.holder, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signing + "." + enc(append(pad32(r), pad32(sg)...))
+}
+
+func (s *stand) exchange(t *testing.T, subject, actor, proof string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	form := url.Values{
+		"grant_type":    {GrantType},
+		"subject_token": {subject},
+		"actor_token":   {actor},
+	}
+	req := httptest.NewRequest("POST", "http://vouchryx.test/v1/token", strings.NewReader(form.Encode()))
+	req.Header.Set("content-type", "application/x-www-form-urlencoded")
+	if proof != "" {
+		req.Header.Set("DPoP", proof)
+	}
+	w := httptest.NewRecorder()
+	s.srv.Routes().ServeHTTP(w, req)
+	var body map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	return w, body
+}
+
+// THE END-TO-END ONE. Everything else here is this with a piece removed.
+func TestAnExchangeIssuesATokenBoundToTheProofsKeyWithTheChainTheRightWayRound(t *testing.T) {
+	s := newStand(t)
+	w, body := s.exchange(t,
+		s.input(t, "user://acme/alice", nil),
+		s.input(t, "agent://acme/triage", nil),
+		s.proof(t, "p1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("a correct exchange was refused: %d %s", w.Code, w.Body)
+	}
+	if body["token_type"] != "DPoP" {
+		t.Fatalf("a sender-constrained token must not be advertised as a bearer: %v", body)
+	}
+
+	claims, err := jose.Verify(body["access_token"].(string), s.srv.Cfg.PublicSet())
+	if err != nil {
+		t.Fatalf("the issued token does not verify against our own published JWKS: %v", err)
+	}
+	if claims["sub"] != "user://acme/alice" {
+		t.Fatalf("the subject moved: %v", claims["sub"])
+	}
+	if claims["iss"] != ourIss {
+		t.Fatalf("issued under the wrong iss: %v", claims["iss"])
+	}
+
+	// Bound to the holder's key, or this is a bearer token with extra steps.
+	want, _ := jose.Thumbprint(jose.FromPublic(&s.holder.PublicKey, ""))
+	cnf, _ := claims["cnf"].(map[string]any)
+	if cnf == nil || cnf["jkt"] != want {
+		t.Fatalf("cnf.jkt is not the proof's key: %v", claims["cnf"])
+	}
+
+	// And the direction, which is the failure that verifies cleanly and lies.
+	act := actOf(t, claims)
+	if act.Sub != "agent://acme/triage" {
+		t.Fatalf("the outermost actor must be the immediate one, got %q", act.Sub)
+	}
+	if exp, ok := claims["exp"].(float64); !ok || int64(exp) != s.now.Add(config.DefaultTTL).Unix() {
+		t.Fatalf("exp is not the configured TTL from now: %v", claims["exp"])
+	}
+}
+
+// Delegation of a delegation: the chain has to grow at the right end, and the
+// second exchange has to READ the first one's chain rather than starting over.
+// A service that dropped the prior chain would issue a token asserting that the
+// newest agent acts directly for the user, with the middle of the delegation
+// silently gone.
+func TestASecondExchangeExtendsTheChainRatherThanReplacingIt(t *testing.T) {
+	s := newStand(t)
+	_, first := s.exchange(t,
+		s.input(t, "user://acme/alice", nil),
+		s.input(t, "agent://acme/triage", nil),
+		s.proof(t, "c1"))
+	firstToken, _ := first["access_token"].(string)
+	if firstToken == "" {
+		t.Fatalf("the first exchange failed: %v", first)
+	}
+	firstClaims, err := jose.Verify(firstToken, s.srv.Cfg.PublicSet())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The second hop presents a subject token from the IdP carrying the chain
+	// so far, and a new actor.
+	subject := s.input(t, "user://acme/alice", map[string]any{"act": firstClaims["act"]})
+	_, second := s.exchange(t, subject, s.input(t, "agent://acme/runbook", nil), s.proof(t, "c2"))
+	secondToken, _ := second["access_token"].(string)
+	if secondToken == "" {
+		t.Fatalf("the second exchange failed: %v", second)
+	}
+	claims, err := jose.Verify(secondToken, s.srv.Cfg.PublicSet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	act := actOf(t, claims)
+	sub, _ := claims["sub"].(string)
+	chain, err := exchange.Chain(sub, &act)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "user://acme/alice,agent://acme/triage,agent://acme/runbook"
+	if strings.Join(chain, ",") != want {
+		t.Fatalf("the chain is wrong:\n got %v\nwant %s", chain, want)
+	}
+}
+
+func TestNoProofMeansNoToken(t *testing.T) {
+	// Without a proof there is nothing to bind to, and issuing anyway would
+	// make every token in the estate a bearer token.
+	s := newStand(t)
+	w, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), "")
+	if w.Code == http.StatusOK {
+		t.Fatal("a token was issued with no DPoP proof")
+	}
+}
+
+func TestATokenFromAnUntrustedIssuerIsRefused(t *testing.T) {
+	s := newStand(t)
+	other := key(t)
+	forged, _ := jose.SignES256(other, "idp-1", map[string]any{
+		"iss": "https://evil.example", "sub": "user://acme/alice", "aud": audience,
+		"exp": s.now.Add(time.Hour).Unix(),
+	})
+	w, _ := s.exchange(t, forged, s.input(t, "agent://acme/triage", nil), s.proof(t, "p2"))
+	if w.Code == http.StatusOK {
+		t.Fatal("a token from an unconfigured issuer was exchanged")
+	}
+}
+
+func TestATokenSignedByTheWrongKeyOfATrustedIssuerIsRefused(t *testing.T) {
+	// The issuer is looked up by the token's own `iss` and then verified
+	// against THAT issuer's keys. Trying every trusted issuer's keys in turn
+	// would let one compromised issuer mint tokens claiming to be any other.
+	s := newStand(t)
+	impostor := key(t)
+	forged, _ := jose.SignES256(impostor, "idp-1", map[string]any{
+		"iss": idpIss, "sub": "user://acme/root", "aud": audience,
+		"exp": s.now.Add(time.Hour).Unix(),
+	})
+	w, _ := s.exchange(t, forged, s.input(t, "agent://acme/triage", nil), s.proof(t, "p3"))
+	if w.Code == http.StatusOK {
+		t.Fatal("a token signed by the wrong key was exchanged")
+	}
+}
+
+func TestAnExpiredOrEndlessInputTokenIsRefused(t *testing.T) {
+	// Endless as well as expired: a token with no `exp` is a permanent
+	// credential, and exchanging one for a short-lived token would launder it
+	// into something that looks disciplined.
+	s := newStand(t)
+	for name, over := range map[string]map[string]any{
+		"expired": {"exp": s.now.Add(-time.Minute).Unix()},
+		"no exp":  {"exp": nil},
+	} {
+		w, _ := s.exchange(t, s.input(t, "user://acme/alice", over),
+			s.input(t, "agent://acme/triage", nil), s.proof(t, "p-"+name))
+		if w.Code == http.StatusOK {
+			t.Fatalf("an %s subject token was exchanged", name)
+		}
+	}
+}
+
+func TestATokenMintedForSomebodyElseCannotBeSpentHere(t *testing.T) {
+	s := newStand(t)
+	w, _ := s.exchange(t,
+		s.input(t, "user://acme/alice", map[string]any{"aud": "https://someone-else.example"}),
+		s.input(t, "agent://acme/triage", nil), s.proof(t, "p4"))
+	if w.Code == http.StatusOK {
+		t.Fatal("a token for another audience was exchanged")
+	}
+}
+
+func TestARefusalDoesNotSayWhichCheckFailed(t *testing.T) {
+	// A verifier that narrates its reasoning to whoever presented the token is
+	// an oracle: told which of eight checks failed, an attacker walks them one
+	// at a time. The detail goes to the event stream, where an operator reads
+	// it and an attacker does not.
+	s := newStand(t)
+	cases := map[string]func() (*httptest.ResponseRecorder, map[string]any){
+		"no proof": func() (*httptest.ResponseRecorder, map[string]any) {
+			return s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/t", nil), "")
+		},
+		"expired": func() (*httptest.ResponseRecorder, map[string]any) {
+			return s.exchange(t, s.input(t, "user://acme/alice", map[string]any{"exp": s.now.Add(-time.Hour).Unix()}),
+				s.input(t, "agent://acme/t", nil), s.proof(t, "o1"))
+		},
+		"bad aud": func() (*httptest.ResponseRecorder, map[string]any) {
+			return s.exchange(t, s.input(t, "user://acme/alice", map[string]any{"aud": "elsewhere"}),
+				s.input(t, "agent://acme/t", nil), s.proof(t, "o2"))
+		},
+	}
+	var seen []string
+	for name, run := range cases {
+		w, body := run()
+		if w.Code == http.StatusOK {
+			t.Fatalf("%s was accepted", name)
+		}
+		raw, _ := json.Marshal(body)
+		seen = append(seen, string(raw))
+	}
+	for i := 1; i < len(seen); i++ {
+		if seen[i] != seen[0] {
+			t.Fatalf("three different refusals told the caller three different things:\n%s\n%s", seen[0], seen[i])
+		}
+	}
+}
+
+func TestThePublishedSetCarriesNoPrivateKey(t *testing.T) {
+	s := newStand(t)
+	req := httptest.NewRequest("GET", "http://vouchryx.test/.well-known/jwks.json", nil)
+	w := httptest.NewRecorder()
+	s.srv.Routes().ServeHTTP(w, req)
+	for _, member := range []string{`"d"`, `"p"`, `"q"`} {
+		if strings.Contains(w.Body.String(), member) {
+			t.Fatalf("the signing key is public, forever: %s", w.Body)
+		}
+	}
+}
+
+func TestRevokingASubjectReachesTheListEnforcementPointsPoll(t *testing.T) {
+	s := newStand(t)
+	body := strings.NewReader(`{"subject":"agent://acme/triage","actor":"user://acme/alice","reason":"credential in a paste"}`)
+	req := httptest.NewRequest("POST", "http://vouchryx.test/v1/revoke", body)
+	w := httptest.NewRecorder()
+	s.srv.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("a revocation was refused: %d %s", w.Code, w.Body)
+	}
+
+	w = httptest.NewRecorder()
+	s.srv.Routes().ServeHTTP(w, httptest.NewRequest("GET", "http://vouchryx.test/v1/revocations", nil))
+	var out struct {
+		Revocations []revoke.Entry `json:"revocations"`
+		AsOf        int64          `json:"as_of"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Revocations) != 1 || out.Revocations[0].Subject != "agent://acme/triage" {
+		t.Fatalf("the revocation did not reach the list: %s", w.Body)
+	}
+	if out.AsOf == 0 {
+		t.Fatal("without as_of, an empty list and an unreachable service look identical")
+	}
+}
+
+func TestARevocationWithNoActorOrNoReasonIsRefused(t *testing.T) {
+	// A revocation nobody signed is an outage somebody has to reconstruct from
+	// timing. Same two fields tokenfuse's declassify endpoint requires.
+	s := newStand(t)
+	for _, body := range []string{
+		`{"subject":"agent://acme/t","reason":"why"}`,
+		`{"subject":"agent://acme/t","actor":"user://a/b"}`,
+		`{"actor":"user://a/b","reason":"why"}`,
+	} {
+		req := httptest.NewRequest("POST", "http://vouchryx.test/v1/revoke", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		s.srv.Routes().ServeHTTP(w, req)
+		if w.Code == http.StatusOK {
+			t.Fatalf("accepted: %s", body)
+		}
+	}
+}
+
+func actOf(t *testing.T, claims map[string]any) exchange.Act {
+	t.Helper()
+	raw, err := json.Marshal(claims["act"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var act exchange.Act
+	if err := json.Unmarshal(raw, &act); err != nil {
+		t.Fatal(err)
+	}
+	return act
+}
+
+func enc(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+
+func pad32(n *big.Int) []byte {
+	b := n.Bytes()
+	if len(b) >= 32 {
+		return b
+	}
+	out := make([]byte, 32)
+	copy(out[32-len(b):], b)
+	return out
+}
