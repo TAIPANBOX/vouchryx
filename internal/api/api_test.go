@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -541,3 +542,77 @@ func TestEveryEventThisServiceWritesNamesAnAgent(t *testing.T) {
 }
 
 var agentIDPattern = regexp.MustCompile(`^agent://[a-z0-9.-]+/[a-z0-9._/-]+$`)
+
+// captureLog redirects the standard logger for one test. The operator's log is
+// the only channel a refusal with no identified agent can reach, so it is the
+// thing under test rather than an implementation detail.
+func captureLog(t *testing.T) *strings.Builder {
+	t.Helper()
+	var buf strings.Builder
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+	return &buf
+}
+
+// TestEveryRefusalReachesTheOperator is about the OPERATOR half of this
+// package's own promise: "the detail goes to the event stream, where an
+// operator can read it and an attacker cannot".
+//
+// Measured 2026-08-26 against a running instance: after a refused exchange the
+// events file was zero bytes and the service log said nothing. Five of the nine
+// `deny` sites pass an empty subject, which `emit` drops because SPEC 6.1 will
+// not have a non-agent `agent_id`, and six more refusal paths never reach
+// `deny` at all, two of them 500s. So an operator whose issuer is refusing
+// every exchange, or failing outright, had nothing to read anywhere.
+//
+// Dropping the EVENT is right and stays: inventing an `agent_id` to file a
+// refusal under is worse than not filing it. What was missing is the other
+// channel.
+func TestEveryRefusalReachesTheOperator(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		reason string
+		send   func(*stand) *httptest.ResponseRecorder
+	}{
+		{"no proof at all", "no_dpop_proof", func(s *stand) *httptest.ResponseRecorder {
+			w, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), "")
+			return w
+		}},
+		{"a grant type this service does not run", "grant_type_not_implemented", func(s *stand) *httptest.ResponseRecorder {
+			req := httptest.NewRequest("POST", "http://vouchryx.test/v1/token",
+				strings.NewReader("grant_type=password"))
+			req.Header.Set("content-type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+			s.srv.Routes().ServeHTTP(w, req)
+			return w
+		}},
+		{"a revocation naming nobody", "revocation_names_nobody", func(s *stand) *httptest.ResponseRecorder {
+			req := httptest.NewRequest("POST", "http://vouchryx.test/v1/revoke",
+				strings.NewReader(`{"actor":"user://acme/alice","reason":"x"}`))
+			w := httptest.NewRecorder()
+			s.srv.Routes().ServeHTTP(w, req)
+			return w
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStand(t)
+			buf := captureLog(t)
+			w := c.send(s)
+			if w.Code < 400 {
+				t.Fatalf("this case is meant to be refused and was not: %d", w.Code)
+			}
+			logged := buf.String()
+			if !strings.Contains(logged, c.reason) {
+				t.Fatalf("the operator's log does not name why this was refused.\n"+
+					"want a line naming %q, got:\n%s", c.reason, logged)
+			}
+			// The response stays an oracle-free OAuth code. The reason is for
+			// the operator and must not travel back to whoever was refused.
+			if strings.Contains(w.Body.String(), c.reason) {
+				t.Fatalf("the refusal reason reached the caller: %s", w.Body.String())
+			}
+		})
+	}
+}

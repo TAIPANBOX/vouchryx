@@ -138,3 +138,11 @@ Feature: A delegation that can be proved, and ended
   # What stays below is this service's own behaviour: the exchange, the
   # revocation list, and refusing to start half-configured.
   # ---------------------------------------------------------------------
+
+  # @test:TestEveryRefusalReachesTheOperator
+  Scenario: A refusal the operator can actually see
+    Given a request this service will not honour, of any of the fifteen kinds
+    When it is refused
+    Then the reason is in the operator's log, and the reason is not in the
+      answer the caller gets, because which check failed is an oracle for
+      whoever was refused and a diagnosis for whoever runs the service
