@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/TAIPANBOX/agent-stack-go/delegation"
@@ -150,20 +151,16 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		deny("", "bad_subject_token", map[string]any{"detail": err.Error()})
 		return
 	}
-	// The subject token has verified by here, so its `sub` is a name this
-	// service established and may record, even though the exchange fails.
-	verifiedSub, _ := subject["sub"].(string)
-
 	actor, _, err := s.verifyInput(r.PostForm.Get("actor_token"))
 	if err != nil {
-		deny(verifiedSub, "bad_actor_token", map[string]any{"detail": err.Error()})
+		deny("", "bad_actor_token", map[string]any{"detail": err.Error()})
 		return
 	}
 
 	sub, _ := subject["sub"].(string)
 	actorSub, _ := actor["sub"].(string)
 	if sub == "" || actorSub == "" {
-		deny(verifiedSub, "token_names_no_subject", nil)
+		deny("", "token_names_no_subject", nil)
 		return
 	}
 
@@ -178,18 +175,18 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal(b, &act)
 		}
 		if prior, err = delegation.ReadAct(&act); err != nil {
-			deny(sub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
+			deny(actorSub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
 			return
 		}
 	}
 	chain, err := delegation.Extend(prior, actorSub)
 	if err != nil {
-		deny(sub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
+		deny(actorSub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
 		return
 	}
 	act, err := delegation.BuildAct(chain)
 	if err != nil {
-		deny(sub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
+		deny(actorSub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
 		return
 	}
 
@@ -227,10 +224,13 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	// the human missing from it.
 	recorded, err := delegation.Chain(sub, act)
 	if err != nil {
-		deny(sub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
+		deny(actorSub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
 		return
 	}
-	s.emit("delegation_issued", sub, recorded, map[string]any{
+	// The ACTOR, not the subject: this record is about the agent that received
+	// the authority, and `recorded` already carries the whole chain root-first
+	// with the human at its head, so nothing is lost by not repeating it here.
+	s.emit("delegation_issued", actorSub, recorded, map[string]any{
 		"jti":            jti,
 		"cnf_jkt":        thumb,
 		"subject_issuer": subIss,
@@ -357,6 +357,14 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"revoked": true, "expires": e.Expires})
 }
 
+// isAgentID is SPEC 6.1's constraint on `agent_id`, and the `claimed:` prefix is
+// deliberately NOT accepted: this service establishes the names it records by
+// verifying a token, so a claimed one here would be this service marking its own
+// verified fact as unverified.
+func isAgentID(s string) bool { return agentIDRe.MatchString(s) }
+
+var agentIDRe = regexp.MustCompile(`^agent://[a-z0-9.-]+/[a-z0-9._/-]+$`)
+
 // emit writes one agent-event, and never fails the request when it cannot.
 //
 // Fail-open on the record, deliberately and in one direction only: a service
@@ -368,10 +376,18 @@ func (s *Server) emit(kind, agentID string, chain []string, data map[string]any)
 	if s.Events == nil {
 		return
 	}
-	if agentID == "" {
-		// SPEC 6.1 forbids inventing a subject, and `Writer` would refuse it
-		// anyway. A denial with no identifiable subject is counted by the
-		// caller's own logs rather than fabricated into the record.
+	if !isAgentID(agentID) {
+		// SPEC 6.1 constrains `agent_id` to `agent://<domain>/<path>`, and this
+		// guard was `agentID == ""` until 2026-08-26, so a subject that was
+		// merely NOT AN AGENT went straight through. The canonical exchange is a
+		// human delegating to an agent, so `user://acme/alice` reached the file
+		// and the estate's own `agent-conform` refused every line of it.
+		//
+		// Nothing is invented to fill the gap and nothing malformed is written.
+		// An event with no agent to file it under is not recorded here, and the
+		// caller's own logs and the revocation list are where those live. That
+		// is the same position trailryx takes about `policy_updated`: an action
+		// that is not an agent's does not become part of some agent's history.
 		return
 	}
 	_ = s.Events.Write(event.Event{
