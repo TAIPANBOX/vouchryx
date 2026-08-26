@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TAIPANBOX/vouchryx/internal/jose"
+	"github.com/TAIPANBOX/agent-stack-go/delegation"
 )
 
 // DefaultTTL is how long an issued delegation lives.
@@ -45,8 +45,8 @@ type Issuer struct {
 	Audience string
 	// Keys is the issuer's JWKS, read once at startup. Offline verification,
 	// for the reason the plan gives: the PDP runs at a 3.2 ms p50 and a
-	// network fetch inside the request path taxes every exchange.
-	Keys jose.Set
+	// network fetch inside the request path taxes every delegation.
+	Keys delegation.Set
 }
 
 // Config is everything this process needs.
@@ -98,7 +98,7 @@ func FromEnv() (Config, error) {
 		return c, err
 	}
 	c.SigningKey = key
-	c.KeyID, err = jose.Thumbprint(jose.FromPublic(&key.PublicKey, ""))
+	c.KeyID, err = delegation.Thumbprint(delegation.FromPublic(&key.PublicKey, ""))
 	if err != nil {
 		return c, err
 	}
@@ -127,8 +127,8 @@ func (c Config) FindIssuer(iss string) (Issuer, bool) {
 }
 
 // PublicSet is what `/.well-known/jwks.json` serves.
-func (c Config) PublicSet() jose.Set {
-	return jose.Set{Keys: []jose.JWK{jose.FromPublic(&c.SigningKey.PublicKey, c.KeyID)}}
+func (c Config) PublicSet() delegation.Set {
+	return delegation.Set{Keys: []delegation.JWK{delegation.FromPublic(&c.SigningKey.PublicKey, c.KeyID)}}
 }
 
 func loadKey(path string) (*ecdsa.PrivateKey, error) {
@@ -173,7 +173,7 @@ func loadTrusted(spec string) ([]Issuer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading the JWKS for %s at %s: %w", parts[0], parts[2], err)
 		}
-		var set jose.Set
+		var set delegation.Set
 		if err := json.Unmarshal(raw, &set); err != nil {
 			return nil, fmt.Errorf("the JWKS for %s at %s is not a JWK Set: %w", parts[0], parts[2], err)
 		}

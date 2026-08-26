@@ -27,11 +27,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/TAIPANBOX/agent-stack-go/delegation"
 	"github.com/TAIPANBOX/agent-stack-go/event"
 	"github.com/TAIPANBOX/vouchryx/internal/config"
-	"github.com/TAIPANBOX/vouchryx/internal/dpop"
-	"github.com/TAIPANBOX/vouchryx/internal/exchange"
-	"github.com/TAIPANBOX/vouchryx/internal/jose"
 	"github.com/TAIPANBOX/vouchryx/internal/revoke"
 )
 
@@ -50,7 +48,7 @@ const Source = "vouchryx"
 type Server struct {
 	Cfg    config.Config
 	Revs   *revoke.List
-	Proofs *dpop.Verifier
+	Proofs *delegation.Verifier
 	Events *event.Writer
 	// Now is injected so every time-dependent behaviour is testable without
 	// sleeping. A test that has to sleep to prove an expiry is a test nobody
@@ -82,7 +80,7 @@ func (s *Server) now() time.Time {
 //
 // `Cfg.PublicSet` builds it from the public key only. There is no path in this
 // package that can serialize a private key, which is why the check lives in
-// `jose.FromPublic`'s signature rather than in a filter here: a filter can be
+// `delegation.FromPublic`'s signature rather than in a filter here: a filter can be
 // forgotten, a type cannot.
 func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.Cfg.PublicSet())
@@ -98,7 +96,7 @@ func (s *Server) revocations(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// token is RFC 8693 token exchange.
+// token is RFC 8693 token delegation.
 func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		oauthError(w, http.StatusBadRequest, "invalid_request")
@@ -152,21 +150,21 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	// and a reversal here would produce a token that verifies and lies.
 	var prior []string
 	if raw, ok := subject["act"]; ok {
-		var act exchange.Act
+		var act delegation.Act
 		if b, err := json.Marshal(raw); err == nil {
 			_ = json.Unmarshal(b, &act)
 		}
-		if prior, err = exchange.ReadAct(&act); err != nil {
+		if prior, err = delegation.ReadAct(&act); err != nil {
 			deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
 			return
 		}
 	}
-	chain, err := exchange.Extend(prior, actorSub)
+	chain, err := delegation.Extend(prior, actorSub)
 	if err != nil {
 		deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
 		return
 	}
-	act, err := exchange.BuildAct(chain)
+	act, err := delegation.BuildAct(chain)
 	if err != nil {
 		deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
 		return
@@ -194,7 +192,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		claims["scope"] = scope
 	}
 
-	signed, err := jose.SignES256(s.Cfg.SigningKey, s.Cfg.KeyID, claims)
+	signed, err := delegation.SignES256(s.Cfg.SigningKey, s.Cfg.KeyID, claims)
 	if err != nil {
 		oauthError(w, http.StatusInternalServerError, "server_error")
 		return
@@ -204,7 +202,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	// agent-passport's `on_behalf_of` is root-first WITH the subject at its
 	// head. Handing `chain` straight to the event would write a delegation with
 	// the human missing from it.
-	recorded, err := exchange.Chain(sub, act)
+	recorded, err := delegation.Chain(sub, act)
 	if err != nil {
 		deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
 		return
@@ -242,7 +240,7 @@ func (s *Server) verifyInput(token string) (map[string]any, string, error) {
 	if !ok {
 		return nil, "", fmt.Errorf("issuer not trusted")
 	}
-	claims, err := jose.Verify(token, issuer.Keys)
+	claims, err := delegation.VerifyToken(token, issuer.Keys)
 	if err != nil {
 		return nil, "", err
 	}

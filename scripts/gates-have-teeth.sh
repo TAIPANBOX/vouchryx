@@ -31,17 +31,10 @@ PY
   printf "ok  %-56s (%s)\n" "$1" "$5"
 }
 
-fault "alg gate: a verifier stops consulting the allowlist" \
-  internal/jose/jose.go '	if !allowed(key.Kty, header.Alg) {' '	if false {' \
-  fail ./scripts/the-algorithm-comes-from-the-key.sh
-
-fault "alg gate: the allowlist is keyed on the token header" \
-  internal/jose/jose.go '	if !allowed(jwk.Kty, header.Alg) {' '	if !allowed(header.Alg, header.Alg) {' \
-  fail ./scripts/the-algorithm-comes-from-the-key.sh
-
-fault "alg gate: a comment mentioning alg is NOT a fault" \
-  internal/jose/jose.go '// Package jose signs' '// Package jose (alg, header, allowed) signs' \
-  pass ./scripts/the-algorithm-comes-from-the-key.sh
+# The three alg-gate cases that were here moved to agent-stack-go with the file
+# they mutated. A teeth case for a gate this repository no longer has would be
+# a case that could never fail, which is the shape this whole script exists to
+# catch one level up.
 
 fault "features: a scenario points at a test that does not exist" \
   features/delegation.feature '# @test:TestNoProofMeansNoToken' '# @test:TestNoSuchTestAnywhere' \

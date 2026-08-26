@@ -24,10 +24,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/TAIPANBOX/agent-stack-go/delegation"
 	"github.com/TAIPANBOX/agent-stack-go/event"
 	"github.com/TAIPANBOX/vouchryx/internal/api"
 	"github.com/TAIPANBOX/vouchryx/internal/config"
-	"github.com/TAIPANBOX/vouchryx/internal/dpop"
 	"github.com/TAIPANBOX/vouchryx/internal/revoke"
 )
 
@@ -44,7 +44,7 @@ func main() {
 	srv := &api.Server{
 		Cfg:    cfg,
 		Revs:   revoke.New(),
-		Proofs: dpop.NewVerifier(),
+		Proofs: delegation.NewVerifier(),
 		Now:    time.Now,
 	}
 	if cfg.EventsPath != "" {

@@ -15,10 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TAIPANBOX/agent-stack-go/delegation"
 	"github.com/TAIPANBOX/vouchryx/internal/config"
-	"github.com/TAIPANBOX/vouchryx/internal/dpop"
-	"github.com/TAIPANBOX/vouchryx/internal/exchange"
-	"github.com/TAIPANBOX/vouchryx/internal/jose"
 	"github.com/TAIPANBOX/vouchryx/internal/revoke"
 )
 
@@ -38,7 +36,7 @@ type stand struct {
 func newStand(t *testing.T) *stand {
 	t.Helper()
 	idp, signing, holder := key(t), key(t), key(t)
-	kid, err := jose.Thumbprint(jose.FromPublic(&signing.PublicKey, ""))
+	kid, err := delegation.Thumbprint(delegation.FromPublic(&signing.PublicKey, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,11 +54,11 @@ func newStand(t *testing.T) *stand {
 				Trusted: []config.Issuer{{
 					Iss:      idpIss,
 					Audience: audience,
-					Keys:     jose.Set{Keys: []jose.JWK{jose.FromPublic(&idp.PublicKey, "idp-1")}},
+					Keys:     delegation.Set{Keys: []delegation.JWK{delegation.FromPublic(&idp.PublicKey, "idp-1")}},
 				}},
 			},
 			Revs:   revoke.New(),
-			Proofs: dpop.NewVerifier(),
+			Proofs: delegation.NewVerifier(),
 			Now:    func() time.Time { return now },
 		},
 	}
@@ -89,7 +87,7 @@ func (s *stand) input(t *testing.T, sub string, over map[string]any) string {
 		}
 		claims[k] = v
 	}
-	tok, err := jose.SignES256(s.idp, "idp-1", claims)
+	tok, err := delegation.SignES256(s.idp, "idp-1", claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +97,7 @@ func (s *stand) input(t *testing.T, sub string, over map[string]any) string {
 func (s *stand) proof(t *testing.T, jti string) string {
 	t.Helper()
 	header, _ := json.Marshal(map[string]any{
-		"typ": "dpop+jwt", "alg": "ES256", "jwk": jose.FromPublic(&s.holder.PublicKey, ""),
+		"typ": "dpop+jwt", "alg": "ES256", "jwk": delegation.FromPublic(&s.holder.PublicKey, ""),
 	})
 	claims, _ := json.Marshal(map[string]any{
 		"htm": "POST", "htu": "http://vouchryx.test/v1/token",
@@ -147,7 +145,7 @@ func TestAnExchangeIssuesATokenBoundToTheProofsKeyWithTheChainTheRightWayRound(t
 		t.Fatalf("a sender-constrained token must not be advertised as a bearer: %v", body)
 	}
 
-	claims, err := jose.Verify(body["access_token"].(string), s.srv.Cfg.PublicSet())
+	claims, err := delegation.VerifyToken(body["access_token"].(string), s.srv.Cfg.PublicSet())
 	if err != nil {
 		t.Fatalf("the issued token does not verify against our own published JWKS: %v", err)
 	}
@@ -159,7 +157,7 @@ func TestAnExchangeIssuesATokenBoundToTheProofsKeyWithTheChainTheRightWayRound(t
 	}
 
 	// Bound to the holder's key, or this is a bearer token with extra steps.
-	want, _ := jose.Thumbprint(jose.FromPublic(&s.holder.PublicKey, ""))
+	want, _ := delegation.Thumbprint(delegation.FromPublic(&s.holder.PublicKey, ""))
 	cnf, _ := claims["cnf"].(map[string]any)
 	if cnf == nil || cnf["jkt"] != want {
 		t.Fatalf("cnf.jkt is not the proof's key: %v", claims["cnf"])
@@ -190,7 +188,7 @@ func TestASecondExchangeExtendsTheChainRatherThanReplacingIt(t *testing.T) {
 	if firstToken == "" {
 		t.Fatalf("the first exchange failed: %v", first)
 	}
-	firstClaims, err := jose.Verify(firstToken, s.srv.Cfg.PublicSet())
+	firstClaims, err := delegation.VerifyToken(firstToken, s.srv.Cfg.PublicSet())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,13 +201,13 @@ func TestASecondExchangeExtendsTheChainRatherThanReplacingIt(t *testing.T) {
 	if secondToken == "" {
 		t.Fatalf("the second exchange failed: %v", second)
 	}
-	claims, err := jose.Verify(secondToken, s.srv.Cfg.PublicSet())
+	claims, err := delegation.VerifyToken(secondToken, s.srv.Cfg.PublicSet())
 	if err != nil {
 		t.Fatal(err)
 	}
 	act := actOf(t, claims)
 	sub, _ := claims["sub"].(string)
-	chain, err := exchange.Chain(sub, &act)
+	chain, err := delegation.Chain(sub, &act)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +230,7 @@ func TestNoProofMeansNoToken(t *testing.T) {
 func TestATokenFromAnUntrustedIssuerIsRefused(t *testing.T) {
 	s := newStand(t)
 	other := key(t)
-	forged, _ := jose.SignES256(other, "idp-1", map[string]any{
+	forged, _ := delegation.SignES256(other, "idp-1", map[string]any{
 		"iss": "https://evil.example", "sub": "user://acme/alice", "aud": audience,
 		"exp": s.now.Add(time.Hour).Unix(),
 	})
@@ -248,7 +246,7 @@ func TestATokenSignedByTheWrongKeyOfATrustedIssuerIsRefused(t *testing.T) {
 	// would let one compromised issuer mint tokens claiming to be any other.
 	s := newStand(t)
 	impostor := key(t)
-	forged, _ := jose.SignES256(impostor, "idp-1", map[string]any{
+	forged, _ := delegation.SignES256(impostor, "idp-1", map[string]any{
 		"iss": idpIss, "sub": "user://acme/root", "aud": audience,
 		"exp": s.now.Add(time.Hour).Unix(),
 	})
@@ -377,13 +375,13 @@ func TestARevocationWithNoActorOrNoReasonIsRefused(t *testing.T) {
 	}
 }
 
-func actOf(t *testing.T, claims map[string]any) exchange.Act {
+func actOf(t *testing.T, claims map[string]any) delegation.Act {
 	t.Helper()
 	raw, err := json.Marshal(claims["act"])
 	if err != nil {
 		t.Fatal(err)
 	}
-	var act exchange.Act
+	var act delegation.Act
 	if err := json.Unmarshal(raw, &act); err != nil {
 		t.Fatal(err)
 	}
