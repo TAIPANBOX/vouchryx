@@ -27,6 +27,14 @@ jobs:
             echo "not gofmt'd: $unformatted" >&2
             exit 1
           fi
+      # Added the day it caught eleven deprecated crypto calls in
+      # agent-stack-go that a local `go vet` and a local test run had both
+      # been silent about. A repository doing its own JOSE without this is a
+      # repository whose most dangerous file nothing is reading.
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2026.1
+          staticcheck ./...
       - name: tests
         run: go test ./... -race
       - name: the algorithm comes from the key
