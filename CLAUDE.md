@@ -55,10 +55,25 @@ acting against anyone else.
    they do not hold, and the binding is decorative. *(test:
    `TestAProofSignedByAKeyOtherThanTheOneItCarriesIsRefused`)*
 
-5. **A refusal says nothing about which check failed.** Told which of eight
-   failed, an attacker walks them one at a time. The detail goes to the event
-   stream, where an operator reads it and an attacker does not. *(test:
-   `TestARefusalDoesNotSayWhichCheckFailed`)*
+5. **A refusal says nothing about which check failed, and says everything to
+   the record.** Told which of eight failed, an attacker walks them one at a
+   time. The detail goes to the event stream, where an operator reads it and an
+   attacker does not.
+
+   **Both halves need holding, and only one of them was.** Until 2026-08-26 the
+   `deny` closure hardcoded an empty subject, and `emit` drops a subjectless
+   event, correctly, because SPEC 6.1 forbids inventing one. So one hundred
+   percent of `delegation_denied` events were discarded and this invariant's
+   second sentence was false for every refusal this service had ever made. The
+   attacker half was tested. The operator half was not, which is why it was the
+   half that broke.
+
+   A refusal raised before a subject token verified still has no subject and
+   still drops: that is SPEC 6.1 and it is correct. The subject is now the
+   first argument to `deny`, so `deny("", ...)` is visible at the call site as
+   a refusal that reaches nobody, rather than being a fact about a closure.
+   *(test: `TestARefusalDoesNotSayWhichCheckFailed` for the first half,
+   `TestARefusalAfterTheSubjectIsKnownReachesTheRecord` for the second)*
 
 6. **A revocation carries an actor and a reason.** One with neither is an outage
    somebody has to reconstruct from timing. *(test:

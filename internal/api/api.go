@@ -17,6 +17,13 @@
 // whoever presented the token is an oracle: told which of eight checks failed,
 // an attacker walks them one at a time. The detail goes to the event stream,
 // where an operator can read it and an attacker cannot.
+//
+// With one honest limit: a refusal raised BEFORE a subject token verified has
+// no subject to name, and SPEC 6.1 forbids inventing one, so `emit` drops it
+// and the operator has the caller's own logs for those. Every refusal after
+// that point names the subject this service established. The sentence above
+// said "the detail goes to the event stream" without the limit until
+// 2026-08-26, on a day when in fact none of them did.
 package api
 
 import (
@@ -102,8 +109,20 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	deny := func(reason string, detail map[string]any) {
-		s.emit("delegation_denied", "", nil, merge(detail, map[string]any{"reason": reason}))
+	// The SUBJECT is the first argument, and it is `""` at every call site that
+	// runs before a subject token has been verified. That is deliberate and it
+	// is why this is a parameter rather than something captured: `emit` drops a
+	// subjectless event, so `deny("")` is a refusal that reaches nobody, and a
+	// reader has to see that at the call site rather than discover it here.
+	//
+	// It was captured until 2026-08-26, hardcoded to `""`, so EVERY refusal was
+	// discarded, including the ones raised after `sub` was read off a token this
+	// service had verified. The package doc below and CLAUDE.md invariant 5 both
+	// promised the detail reaches the event stream "where an operator reads it
+	// and an attacker cannot". The attacker half held. The operator half was
+	// false for every refusal this service ever made.
+	deny := func(sub, reason string, detail map[string]any) {
+		s.emit("delegation_denied", sub, nil, merge(detail, map[string]any{"reason": reason}))
 		oauthError(w, http.StatusBadRequest, "invalid_grant")
 	}
 
@@ -117,30 +136,34 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	// expensive is verified.
 	proof := r.Header.Get("DPoP")
 	if proof == "" {
-		deny("no_dpop_proof", nil)
+		deny("", "no_dpop_proof", nil)
 		return
 	}
 	thumb, err := s.Proofs.Check(proof, r.Method, absoluteURL(r), s.now())
 	if err != nil {
-		deny("bad_dpop_proof", map[string]any{"detail": err.Error()})
+		deny("", "bad_dpop_proof", map[string]any{"detail": err.Error()})
 		return
 	}
 
 	subject, subIss, err := s.verifyInput(r.PostForm.Get("subject_token"))
 	if err != nil {
-		deny("bad_subject_token", map[string]any{"detail": err.Error()})
+		deny("", "bad_subject_token", map[string]any{"detail": err.Error()})
 		return
 	}
+	// The subject token has verified by here, so its `sub` is a name this
+	// service established and may record, even though the exchange fails.
+	verifiedSub, _ := subject["sub"].(string)
+
 	actor, _, err := s.verifyInput(r.PostForm.Get("actor_token"))
 	if err != nil {
-		deny("bad_actor_token", map[string]any{"detail": err.Error()})
+		deny(verifiedSub, "bad_actor_token", map[string]any{"detail": err.Error()})
 		return
 	}
 
 	sub, _ := subject["sub"].(string)
 	actorSub, _ := actor["sub"].(string)
 	if sub == "" || actorSub == "" {
-		deny("token_names_no_subject", nil)
+		deny(verifiedSub, "token_names_no_subject", nil)
 		return
 	}
 
@@ -155,18 +178,18 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal(b, &act)
 		}
 		if prior, err = delegation.ReadAct(&act); err != nil {
-			deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
+			deny(sub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
 			return
 		}
 	}
 	chain, err := delegation.Extend(prior, actorSub)
 	if err != nil {
-		deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
+		deny(sub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
 		return
 	}
 	act, err := delegation.BuildAct(chain)
 	if err != nil {
-		deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
+		deny(sub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
 		return
 	}
 
@@ -204,7 +227,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	// the human missing from it.
 	recorded, err := delegation.Chain(sub, act)
 	if err != nil {
-		deny("bad_delegation_chain", map[string]any{"detail": err.Error()})
+		deny(sub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
 		return
 	}
 	s.emit("delegation_issued", sub, recorded, map[string]any{

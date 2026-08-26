@@ -11,11 +11,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/TAIPANBOX/agent-stack-go/delegation"
+	"github.com/TAIPANBOX/agent-stack-go/event"
 	"github.com/TAIPANBOX/vouchryx/internal/config"
 	"github.com/TAIPANBOX/vouchryx/internal/revoke"
 )
@@ -398,4 +401,72 @@ func pad32(n *big.Int) []byte {
 	out := make([]byte, 32)
 	copy(out[32-len(b):], b)
 	return out
+}
+
+// A denial the operator can read.
+//
+// `deny` hardcoded an empty agent id into every refusal, and `emit` drops an
+// event with no subject (correctly: SPEC 6.1 forbids inventing one). So one
+// hundred percent of `delegation_denied` events were discarded, including the
+// ones raised AFTER the subject token verified and `sub` was known.
+//
+// That is not a gap in the record, it is the record disagreeing with two
+// documents. This package's own doc and CLAUDE.md invariant 5 both promise the
+// detail reaches the event stream "where an operator reads it and an attacker
+// cannot". The attacker half held. The operator half was false for every
+// refusal this service has ever made.
+func TestARefusalAfterTheSubjectIsKnownReachesTheRecord(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.ndjson")
+	w, err := event.NewWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	s := newStand(t)
+	s.srv.Events = w
+
+	// A chain that names its own actor twice: the subject token already carries
+	// `agent://acme/triage` in `act`, and the same actor asks again. `Extend`
+	// refuses it, and by then `sub` has been read off a token this service
+	// verified, so there is a subject to name.
+	subject := s.input(t, "user://acme/alice", map[string]any{
+		"act": map[string]any{"sub": "agent://acme/triage"},
+	})
+	rec, _ := s.exchange(t, subject, s.input(t, "agent://acme/triage", nil), s.proof(t, "p-dup"))
+	if rec.Code == http.StatusOK {
+		t.Fatalf("the stand did not produce a refusal, so this test proves nothing: %s", rec.Body)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the event file was never created: %v", err)
+	}
+	var found *event.Event
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		e, err := event.Unmarshal([]byte(line))
+		if err != nil {
+			t.Fatalf("this service wrote a line that is not an event: %v", err)
+		}
+		if e.Type == "delegation_denied" {
+			found = &e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("the refusal reached nobody: %d line(s) written, none a delegation_denied.\n"+
+			"An operator asking why an exchange failed has this file and nothing else.\n%s",
+			len(strings.Split(strings.TrimSpace(string(raw)), "\n")), raw)
+	}
+	if found.AgentID != "user://acme/alice" {
+		t.Fatalf("the refusal names %q, and the subject this service verified was "+
+			"user://acme/alice", found.AgentID)
+	}
+	if found.Data["reason"] != "bad_delegation_chain" {
+		t.Fatalf("the refusal does not say why: %v", found.Data)
+	}
 }

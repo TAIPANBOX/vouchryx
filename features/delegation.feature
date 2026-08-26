@@ -85,6 +85,14 @@ Feature: A delegation that can be proved, and ended
     Then it carries no private member, because one there is the signing key,
       in public, for ever
 
+  # @test:TestARefusalAfterTheSubjectIsKnownReachesTheRecord
+  Scenario: A refusal an operator can read
+    Given an exchange that fails after its subject token has verified
+    When the caller is told only "invalid_grant"
+    Then the record carries the refusal, its reason and the subject this
+      service established, because the caller is told nothing on purpose and
+      the operator has to be told somewhere
+
   # @test:TestAnIncompleteConfigRefusesToStartAndSaysWhatIsMissing
   Scenario: A half-configured token service does not start
     Given a configuration missing any one required value
