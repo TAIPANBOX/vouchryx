@@ -60,6 +60,18 @@ type Config struct {
 	EventsPath string
 }
 
+// DefaultAddr is where this service listens when nothing says otherwise.
+//
+// It was `127.0.0.1:4300` until 2026-08-26, which is scopyx's, so the two could
+// not start side by side on a box that ran both. That box is the ordinary one:
+// scopyx governs an agent's web egress and vouchryx issues the authority it
+// acts under, and an operator wanting one usually wants the other.
+//
+// scopyx keeps 4300. It had it first, and stack-k8s and stack-up pin it there,
+// so moving it would be a change to two deployment repositories to spare a
+// service that shipped this morning.
+const DefaultAddr = "127.0.0.1:4310"
+
 // FromEnv builds a config or explains what is missing.
 //
 // It returns an error rather than falling back, and never starts a partly
@@ -68,7 +80,7 @@ type Config struct {
 // everything.
 func FromEnv() (Config, error) {
 	c := Config{
-		Addr:       env("VOUCHRYX_ADDR", "127.0.0.1:4300"),
+		Addr:       env("VOUCHRYX_ADDR", DefaultAddr),
 		Issuer:     os.Getenv("VOUCHRYX_ISSUER"),
 		EventsPath: os.Getenv("VOUCHRYX_EVENTS_PATH"),
 		TTL:        DefaultTTL,

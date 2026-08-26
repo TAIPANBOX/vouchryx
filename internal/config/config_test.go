@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,4 +250,38 @@ func mustFail(t *testing.T) error {
 		t.Fatal("expected a refusal")
 	}
 	return err
+}
+
+// The default port is one nobody else in the estate answers on.
+//
+// vouchryx and scopyx both defaulted to 127.0.0.1:4300, so the two could not
+// start side by side on a box that ran both, and the box that runs both is the
+// ordinary one: scopyx governs an agent's web egress and vouchryx issues the
+// authority it acts under.
+//
+// scopyx keeps 4300. It had it first, and stack-k8s and stack-up pin it there,
+// so moving it would be a change to two deployment repositories to spare a
+// service that shipped this morning.
+//
+// This asserts against the estate's OWN map rather than a number I like:
+// tokenfuse 4100/4200/5000, scopyx 4300, wardryx 4318/8090/9999,
+// trailryx 4318, idryx 8080, genaryx 7420. Measured 2026-08-26.
+func TestTheDefaultPortIsNotOneAnotherServiceAnswersOn(t *testing.T) {
+	taken := map[string]string{
+		"4100": "tokenfuse", "4200": "tokenfuse", "5000": "tokenfuse",
+		"4300": "scopyx", "4318": "wardryx and trailryx",
+		"8080": "idryx and scopyx", "8090": "wardryx", "9999": "wardryx",
+		"7420": "genaryx",
+	}
+	// Read from the same default `FromEnv` uses, with the variable unset, so
+	// this asserts the shipped value and not a constant a test invented.
+	t.Setenv("VOUCHRYX_ADDR", "")
+	_, port, err := net.SplitHostPort(DefaultAddr)
+	if err != nil {
+		t.Fatalf("the default address is not host:port: %q", DefaultAddr)
+	}
+	if who, clash := taken[port]; clash {
+		t.Fatalf("the default port %s is %s's, so the two cannot start side by "+
+			"side on one box, and a box running both is the ordinary case", port, who)
+	}
 }
