@@ -1,6 +1,6 @@
 # vouchryx
 
-![tests](https://img.shields.io/badge/tests-28-brightgreen)
+![tests](https://img.shields.io/badge/tests-29-brightgreen)
 ![go](https://img.shields.io/badge/go-1.26-blue)
 ![deps](https://img.shields.io/badge/runtime%20dependencies-1-blue)
 
@@ -47,7 +47,7 @@ on the request path of every enforcement point at once, and wardryx runs at a
 Every value is required except the first, and none has a permissive default.
 
 ```
-VOUCHRYX_ADDR             where to listen (default 127.0.0.1:4300)
+VOUCHRYX_ADDR             where to listen (default 127.0.0.1:4310)
 VOUCHRYX_ISSUER           the `iss` this service puts on every token it mints
 VOUCHRYX_SIGNING_KEY      path to a PEM EC private key; it issues ES256
 VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path`, one per line
