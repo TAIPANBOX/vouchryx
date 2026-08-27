@@ -146,3 +146,24 @@ Feature: A delegation that can be proved, and ended
     Then the reason is in the operator's log, and the reason is not in the
       answer the caller gets, because which check failed is an oracle for
       whoever was refused and a diagnosis for whoever runs the service
+
+  # @test:TestTheServerAcceptsWhatThisPackageMints
+  Scenario: An operator can walk this loop without writing a JOSE client first
+    Given the reference client this repository ships
+    When it mints the two input tokens and a proof, and exchanges them
+    Then the running service accepts them and issues a token bound to the key
+      the proof carried
+
+  # @test:TestAProofBoundToAnotherDestinationIsRefused
+  Scenario: A proof taken off one request cannot be spent on another
+    Given a proof minted for a different destination
+    When it is presented to the exchange
+    Then the exchange is refused, because the binding to one request is not
+      decoration
+
+  # @test:TestAWrittenKeySetCarriesNoPrivateMemberAndNamesItsKey
+  Scenario: The key set the client writes is publishable and loadable
+    Given the client generates a key pair for a demo issuer
+    When it writes the private key and the public set
+    Then the set carries no private member and names its key, and the private
+      file is readable only by its owner

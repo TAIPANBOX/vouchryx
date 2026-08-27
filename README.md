@@ -1,6 +1,6 @@
 # vouchryx
 
-![tests](https://img.shields.io/badge/tests-33-brightgreen)
+![tests](https://img.shields.io/badge/tests-39-brightgreen)
 ![go](https://img.shields.io/badge/go-1.26-blue)
 ![deps](https://img.shields.io/badge/runtime%20dependencies-1-blue)
 
@@ -58,6 +58,61 @@ VOUCHRYX_EVENTS_PATH      agent-event NDJSON; unset means nothing is recorded
 A missing or malformed value **aborts the process** and names the variable. A
 token service that came up trusting nothing would issue nothing and look
 healthy; one that came up trusting a default would issue everything.
+
+## Walking the loop
+
+The Surface table above documents four endpoints, and until 2026-08-27 nothing
+outside this repository's own tests could call them: an RFC 8693 exchange takes
+two signed input tokens and a DPoP proof whose public key travels in the JWS
+header, which is a JOSE client before it is a curl command. The driver that
+proved the end-to-end path on 2026-08-26 was written in a scratch directory and
+lost with it.
+
+`vouchryx-demo` is that client, shipped.
+
+```sh
+go build -o vouchryx-demo ./cmd/vouchryx-demo
+
+# a demo issuer, this service's own signing key, and the caller's key
+./vouchryx-demo keygen -out idp -kid idp-1
+./vouchryx-demo keygen -out signing
+./vouchryx-demo keygen -out holder
+
+VOUCHRYX_ISSUER=http://127.0.0.1:4310 \
+VOUCHRYX_SIGNING_KEY=signing.pem \
+VOUCHRYX_TRUSTED_ISSUERS="https://idp.local|http://127.0.0.1:4310|idp.jwks.json" \
+  ./vouchryx &
+
+./vouchryx-demo exchange -url http://127.0.0.1:4310 \
+  -idp-key idp.pem -kid idp-1 \
+  -iss https://idp.local -aud http://127.0.0.1:4310 \
+  -subject user://acme/ada -actor agent://acme/triage \
+  -holder-key holder.pem
+```
+
+which prints a token carrying, measured on 2026-08-27:
+
+```json
+{ "iss": "http://127.0.0.1:4310", "sub": "user://acme/ada",
+  "act": { "sub": "agent://acme/triage" },
+  "cnf": { "jkt": "97HAPceqERXiSYV7HglWE8AQM2ULJ7Uu_aGryI15Tiw" },
+  "iat": 1787862197, "exp": 1787862497, "jti": "McIAWz0jmD82xc8uv7TdYQ" }
+```
+
+`cnf.jkt` is the thumbprint of `holder.pem`, which is what makes the token
+useless to anybody who lifts it: spending it needs a **fresh** proof from the
+same key, per request.
+
+```sh
+./vouchryx-demo proof -key holder.pem -htm POST \
+  -htu http://127.0.0.1:4100/v1/messages
+```
+
+**It is a client and it verifies nothing.** Every check stays here, at the
+service, which is the only shape in which shipping a minting helper beside a
+service that refuses for a living is safe: a wrong credential minted there is
+refused here, loudly. Its own tests assert exactly that, by standing up this
+server and requiring it to accept, or refuse, what the client produced.
 
 ## Where the crypto lives
 
