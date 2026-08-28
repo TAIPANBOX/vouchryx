@@ -204,10 +204,20 @@ func TestTheDeclaredListenDefaultIsTheOneTheServiceUses(t *testing.T) {
 //
 // Removing one required variable at a time must produce the declared exit code,
 // and a service started with only its required variables must answer its
-// declared health path with no credential. wardryx one repository over starts
-// happily with an empty environment and installs a built-in admin key; that
-// difference between two services is invisible in any source-reading check and
-// obvious in this one.
+// declared health path with no credential.
+//
+// wardryx one repository over starts happily with an EMPTY environment: it has
+// no required variable at all, and comes up saying it has zero policies and an
+// in-memory store. That difference between two services is invisible in any
+// source-reading check and obvious in one that runs them.
+//
+// CORRECTED 2026-08-28. This comment used to add "and installs a built-in admin
+// key", and that was false. `ParseKeys("")` there returns an empty map, so with
+// no WARDRYX_KEYS there is no key of any kind and every /v1 route answers 401.
+// It is fail-closed, and wardryx's own components.json now declares that and
+// proves it by starting the service, which is where a claim about another
+// repository's authentication belongs. Written here from reading its code
+// rather than running it, believed for two days, and settled by `env -i`.
 func TestTheServiceRefusesWithoutEachRequiredVariableAndAnswersItsHealthPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts processes")
