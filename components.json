@@ -1,0 +1,74 @@
+{
+  "$comment": [
+    "What this repository contributes to a running stack, and what a check may",
+    "believe about it.",
+    "",
+    "WHY IT IS HERE AND NOT IN estate-gates. That repository already carries a",
+    "declaration, the `runs` field, and its own invariant 18 says plainly that",
+    "nothing reads a repository to confirm it. It cannot: the only thing that",
+    "knows which binaries a repository builds is the repository, so a component",
+    "that was FORGOTTEN is invisible from outside by construction. vouchryx was",
+    "installable by nothing for nineteen hours on 2026-08-26 for that reason.",
+    "",
+    "THE TWO BUCKETS ARE THE POINT. Everything under `checked` is proved against",
+    "this repository by manifest_test.go, in this repository's own CI, which has",
+    "the toolchain to build and RUN the thing. Everything under `declared` is a",
+    "statement nobody can verify and carries its own `why`. A richer declaration",
+    "that is equally unverified would be worse than the field it replaces,",
+    "because it looks like more assurance and is not."
+  ],
+  "schema": "taipanbox.dev/components/v1",
+  "repo": "TAIPANBOX/vouchryx",
+  "components": [
+    {
+      "name": "vouchryx",
+      "class": "service",
+      "checked": {
+        "package": "github.com/TAIPANBOX/vouchryx/cmd/vouchryx",
+        "listen_default": "127.0.0.1:4310",
+        "health_path": "/healthz",
+        "env": {
+          "VOUCHRYX_ADDR": { "required": false },
+          "VOUCHRYX_ISSUER": { "required": true },
+          "VOUCHRYX_SIGNING_KEY": { "required": true },
+          "VOUCHRYX_TRUSTED_ISSUERS": { "required": true },
+          "VOUCHRYX_TTL_SECONDS": { "required": false },
+          "VOUCHRYX_EVENTS_PATH": { "required": false }
+        },
+        "missing_required_exit_code": 2
+      },
+      "declared": {
+        "role": {
+          "value": "the delegation plane: RFC 8693 token exchange, and the revocation list every enforcement point polls",
+          "why": "a sentence about purpose is not a property of the source"
+        },
+        "key_material": {
+          "value": ["VOUCHRYX_SIGNING_KEY"],
+          "why": "that a path holds a PRIVATE key rather than any other file is read off the name and the doc comment; nothing in the type system says it, and this repository deliberately never marshals it into anything serialisable (invariant 9)"
+        },
+        "a_launcher_may_probe_something_else": {
+          "value": "/.well-known/jwks.json",
+          "why": "stack-up polls that rather than the health path above, and it is the better probe here rather than a mistake: /healthz returns 200 the moment the process is up, while the key set answering proves the service can do the one thing it exists for. Declared so a cross-repo check reads a decision instead of a disagreement."
+        }
+      }
+    },
+    {
+      "name": "vouchryx-demo",
+      "class": "tool",
+      "checked": {
+        "package": "github.com/TAIPANBOX/vouchryx/cmd/vouchryx-demo",
+        "env": {}
+      },
+      "declared": {
+        "role": {
+          "value": "the reference client: keygen, exchange, proof",
+          "why": "as above"
+        },
+        "not_a_service": {
+          "value": true,
+          "why": "it exits when its subcommand finishes. A heuristic that looks for a listener would agree today and would be wrong the day somebody adds a `serve` to it, so this is declared rather than sniffed."
+        }
+      }
+    }
+  ]
+}

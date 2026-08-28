@@ -167,3 +167,18 @@ Feature: A delegation that can be proved, and ended
     When it writes the private key and the public set
     Then the set carries no private member and names its key, and the private
       file is readable only by its owner
+
+  # @test:TestEveryBinaryThisRepositoryBuildsIsDeclaredAndTheReverse
+  Scenario: A binary this repository builds cannot go undeclared
+    Given the declaration in components.json
+    When it is compared with every main package the module builds
+    Then the two sets are equal in both directions, because a component nobody
+      declared is one no deployment can be checked against
+
+  # @test:TestTheServiceRefusesWithoutEachRequiredVariableAndAnswersItsHealthPath
+  Scenario: The declaration is proved by starting the service, not by reading it
+    Given the smallest environment the declaration says will work
+    When the service is started once per required variable with that one removed
+    Then it exits with the declared code every time, a variable declared
+      optional does not do the same, and with everything set it answers its
+      declared health path to a caller holding no credential
