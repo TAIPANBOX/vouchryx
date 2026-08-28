@@ -101,6 +101,40 @@ acting against anyone else.
     events" then measures who wrote the call rather than what happened. Same
     discipline as tokenfuse's own crate.
 
+12. **What this repository contributes to a running stack is declared HERE and
+    proved by running.** `components.json` at the root, two buckets: everything
+    under `checked` is asserted against this repository by
+    `internal/manifest`, everything under `declared` is a statement nobody can
+    verify and carries its own `why`.
+
+    **Why here rather than in estate-gates.** That repository already holds a
+    declaration, the `runs` field, and its own invariant 18 states plainly that
+    nothing reads a repository to confirm it. It cannot: the only thing that
+    knows which binaries a repository builds is the repository, so a component
+    that was FORGOTTEN is invisible from outside by construction. This one was
+    installable by nothing for nineteen hours on 2026-08-26 for exactly that
+    reason. And the checks that separate this service from wardryx one repo
+    over, which starts happily with an empty environment and installs a
+    built-in `devkey` admin key, are only observable by STARTING the binary
+    with a variable removed. estate-gates has no Go toolchain; this repository
+    already runs `go test ./... -race` on every push.
+
+    **A `declared` entry with no `why` is a claim wearing the costume of a
+    decision**, and is refused. The health path is the worked example: this
+    service serves `/healthz`, stack-up polls `/.well-known/jwks.json`, and the
+    second is the better probe rather than a mistake, because `/healthz`
+    answers the moment the process is up while the key set answering proves the
+    service can do the one thing it exists for. Declared with that reason, so a
+    cross-repo check reads a decision instead of a disagreement.
+    *(tests in `internal/manifest`, four planted faults each caught by name: a
+    binary built and undeclared, a variable read and undeclared, a declared
+    listen default that disagrees with `config.DefaultAddr`, and a required
+    variable declared optional. The last one SURVIVED the first version of the
+    suite, which checked only that required variables are required and never
+    the converse, and declaring a required variable optional is the direction
+    that hurts: a launcher reads it, leaves the variable out, and the plane
+    never comes up.)*
+
 ## Tier
 
 **T3** for anything touching `jose`, `dpop`, `exchange`, `config` or the token
