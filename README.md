@@ -26,6 +26,14 @@ and public keys anybody can verify against offline.
 
 </div>
 
+<div align="center">
+
+<img src="assets/diagram.svg" alt="Vouchryx loop: a subject token, an actor token and a DPoP proof are exchanged at POST /v1/token for a five-minute JWT carrying nested act and the holder key's thumbprint; the enforcement point verifies it offline against published keys and polls /v1/revocations, which carries an as_of timestamp, so nothing asks vouchryx at request time" width="960">
+
+<sub>The same service as its room on <a href="https://it-rat.com/services/vouchryx.html">it-rat.com</a> draws it, lifted from that page so the two cannot drift apart.</sub>
+
+</div>
+
 ---
 
 ## Where this fits in the stack
