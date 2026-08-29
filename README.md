@@ -1,14 +1,78 @@
-# vouchryx
+<div align="center">
 
-![tests](https://img.shields.io/badge/tests-44-brightgreen)
-![go](https://img.shields.io/badge/go-1.27-blue)
-![deps](https://img.shields.io/badge/runtime%20dependencies-1-blue)
+# vouchryx - the delegation plane
 
 **A delegation an agent can prove it holds, and that a person can end.**
+
+[![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
+![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
+![tests](https://img.shields.io/badge/tests-44-brightgreen.svg)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
+![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
+
+<img src="docs/architecture.png" alt="vouchryx architecture: a subject token, an actor token and a DPoP proof are exchanged for a short-lived JWT carrying nested act and the caller key thumbprint, an enforcement point verifies it offline against the JWKS, and a revocation carrying an actor and a reason ends it before it expires" width="960">
+
+</div>
 
 RFC 8693 token exchange with nested `act`, sender-constrained by RFC 9449 DPoP.
 Short-lived tokens, a revocation list an enforcement point can poll and act on,
 and public keys anybody can verify against offline.
+
+<div align="center">
+
+<img src="docs/axes.png" alt="Two switches on different axes: TokenFuse refuses a call with a 402 before the provider bills, which is the wrong answer to a compromised delegation where the spend is affordable; revoking ends the right to act for somebody at every enforcement point at once" width="960">
+
+<sub>The same service as its room on <a href="https://it-rat.com/services/vouchryx.html">it-rat.com</a> draws it.</sub>
+
+</div>
+
+---
+
+## Where this fits in the stack
+
+Vouchryx is the delegation plane: it issues the proof the Agent Passport spec
+deliberately does not, and it is the only place in the stack where an authority
+can be ended without waiting for anything to expire.
+
+```mermaid
+flowchart TB
+  Agent["AI agent (any framework)"] -->|"LLM call (base-URL swap)"| TF["TokenFuse proxy: spend + enforcement"]
+  TF -->|"POST /v1/decide (PEP)"| WX["Wardryx: policy PDP"]
+  WX -.->|"allow / deny / hold"| TF
+  TF -->|"cheapest model, budget OK"| LLM[("LLM provider")]
+  TF -->|"CallRecords"| CL["TokenFuse Cloud: control plane, incidents, replay, evidence, kill-switch"]
+  TF ==>|"agent-event NDJSON"| BUS{{"agent-event bus + Agent Passport"}}
+  WX ==> BUS
+  ENG["Engram: memory"] -->|"reflect via base_url"| TF
+  ENG ==> BUS
+  VX2["Vouchryx: delegation proved, and endable"] -->|"short-lived token, act + cnf"| TF
+  VX2 ==> BUS
+  BUS ==> IDX["Idryx: identity graph, detectors, Agent-BOM"]
+  BUS ==> QX["Qryx: crypto / PQC, passport + hash-chain scan"]
+  BUS ==> VX["Verdryx: quality / drift"]
+  VX ==>|"quality events"| BUS
+  TF -->|"outcome-tagged traces"| VX
+  MX["Mockryx: pre-prod safety rehearsal"] -->|"hostile scenarios"| TF
+  MX ==>|"sim events"| BUS
+  BUS ==> HX["heraldyx: reads the log, mails you"]
+  HX -->|"one mail, a view and never an action"| OPS["your mailbox"]
+  YOU(["you, in a browser over your own tunnel"]) --> GX[["Genaryx: the console over all of it"]]
+  GX -->|"signed commands: the kill, an approval, a policy"| CL
+  GX -->|"signed commands"| WX
+  GX -.->|"reads it"| IDX
+  GX -.->|"reads it"| QX
+  GX -.->|"reads it"| VX
+  GX -.->|"reads it"| MX
+  GX -.->|"reads it"| ENG
+  TFP["terraform-provider-taipan"] -->|"budgets + passports as code"| CL
+  ASG[["agent-stack-go: shared Go contract"]] -.->|imported by| IDX
+  ASG -.->|imported by| WX
+  ASG -.->|imported by| MX
+  ASG -.->|imported by| TFP
+  ASG -.->|imported by| HX
+  ASG -.->|imported by| QX
+  SPEC[["agent-passport: the spec"]] -.->|governs| BUS
+```
 
 ## The gap it closes
 
@@ -211,3 +275,17 @@ Stated here rather than left to be discovered.
 ## Licence
 
 Apache-2.0.
+
+## Status
+
+- [x] RFC 8693 exchange with nested `act`, ES256, short-lived by default
+- [x] Sender-constrained with RFC 9449 DPoP, `cnf.jkt` bound to the caller key
+- [x] Revocation by `jti` or by `subject`, with a required actor and reason
+- [x] `vouchryx-demo` ships the client, so the loop is walkable from a shell
+- [x] `stack-up --with-delegation` brings it up in front of the gateway
+- [ ] An upper IdP in the sandbox; the profile mints a demo issuer instead
+- [ ] Rooms in the other repos' shared stack diagram, which still shows seven planes
+
+## Licence
+
+Apache-2.0, like the rest of the stack. See [LICENSE](./LICENSE).
