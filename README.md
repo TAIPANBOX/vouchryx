@@ -244,7 +244,7 @@ pick one.
 
 ## Testing
 
-63 tests. Tier T3: these are authorization decisions where a wrong answer is
+41 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;

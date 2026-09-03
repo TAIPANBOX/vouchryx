@@ -69,6 +69,15 @@ fault "readme numbers: the stated count drifts from the suite" \
   README.md 'tests-' 'tests-99999-' \
   fail ./scripts/readme-numbers.sh
 
+# The badge and the Testing section's prose are two separate claims about two
+# different counts, so each needs its own fault: the badge case above proves
+# the badge is checked, this one proves the prose is too. README.md:247 said
+# "63 tests." after the suite had shrunk to 41 top-level functions, and the
+# badge-only check above would still pass on that fault.
+fault "readme numbers: the prose test count drifts from the suite" \
+  README.md '41 tests. Tier T3:' '63 tests. Tier T3:' \
+  fail ./scripts/readme-numbers.sh
+
 fault "refusals: one routed around the funnel, so nobody outside sees it" \
   internal/api/api.go 'refuse(w, http.StatusBadRequest, "invalid_request", "revocation_names_nobody", nil)' 'writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_request"})' \
   fail ./scripts/every-refusal-reaches-the-operator.sh

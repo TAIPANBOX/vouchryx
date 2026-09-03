@@ -41,5 +41,7 @@ jobs:
         run: ./scripts/features-are-bound.sh
       - name: the README's numbers are true
         run: ./scripts/readme-numbers.sh
+      - name: every refusal reaches the operator
+        run: ./scripts/every-refusal-reaches-the-operator.sh
       - name: the gates have teeth
         run: ./scripts/gates-have-teeth.sh
