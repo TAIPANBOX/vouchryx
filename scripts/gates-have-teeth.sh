@@ -75,7 +75,7 @@ fault "readme numbers: the stated count drifts from the suite" \
 # "63 tests." after the suite had shrunk to 41 top-level functions, and the
 # badge-only check above would still pass on that fault.
 fault "readme numbers: the prose test count drifts from the suite" \
-  README.md '41 tests. Tier T3:' '63 tests. Tier T3:' \
+  README.md '51 tests. Tier T3:' '999 tests. Tier T3:' \
   fail ./scripts/readme-numbers.sh
 
 fault "refusals: one routed around the funnel, so nobody outside sees it" \
