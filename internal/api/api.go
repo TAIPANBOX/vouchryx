@@ -363,21 +363,16 @@ type revokeBody struct {
 // against the finding that anyone who could reach the port could revoke any
 // `jti` or any `subject`, ending every live delegation in the estate.
 //
-// The body is read (capped) before authorization is checked, so an oversized
-// body is refused with the same 413 whether or not the caller ever presents a
-// key: the size ceiling is not itself something worth telling an
-// unauthenticated caller they lack a key for.
+// Authorization is decided BEFORE the body is parsed, on purpose: the same
+// rule scopyx's door and trailryx's ingest gate follow, that a parser must
+// not be reachable by a caller holding no credential. Before this ordering,
+// an unauthenticated caller still had its JSON body decoded, and could push
+// up to 64KiB through that decoder on every request with no key at all. The
+// body is still capped with MaxBytesReader ahead of everything else, and an
+// AUTHORISED caller with an oversized body still gets 413; what changed is
+// that an unauthorised one now never reaches the decoder to find out.
 func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	var body revokeBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		if isBodyTooLarge(err) {
-			refuse(w, http.StatusRequestEntityTooLarge, "invalid_request", "body_too_large", nil)
-			return
-		}
-		refuse(w, http.StatusBadRequest, "invalid_request", "unreadable_revocation_body", map[string]any{"detail": err.Error()})
-		return
-	}
 
 	// Fail closed, never open: with no key configured, this route refuses
 	// every call rather than accepting one from whoever can reach the port.
@@ -391,6 +386,16 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 		// the two apart would let a caller learn something about which keys
 		// exist without ever holding one.
 		refuse(w, http.StatusUnauthorized, "invalid_client", "revocation_not_authorised", nil)
+		return
+	}
+
+	var body revokeBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if isBodyTooLarge(err) {
+			refuse(w, http.StatusRequestEntityTooLarge, "invalid_request", "body_too_large", nil)
+			return
+		}
+		refuse(w, http.StatusBadRequest, "invalid_request", "unreadable_revocation_body", map[string]any{"detail": err.Error()})
 		return
 	}
 

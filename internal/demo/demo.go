@@ -73,7 +73,7 @@ func WriteKey(path string, key *ecdsa.PrivateKey) error {
 
 // ReadKey reads a private key in either shape the service accepts.
 func ReadKey(path string) (*ecdsa.PrivateKey, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G304 -- path comes from this CLI's own flags, not a network caller
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func WriteJWKS(path string, pub *ecdsa.PublicKey, kid string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(body, '\n'), 0o644)
+	return os.WriteFile(path, append(body, '\n'), 0o644) // #nosec G306 -- public key set, world-readable by design
 }
 
 // InputToken mints one of the two tokens an exchange takes: the token a

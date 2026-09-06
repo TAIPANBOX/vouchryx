@@ -151,7 +151,7 @@ func (c Config) PublicSet() delegation.Set {
 }
 
 func loadKey(path string) (*ecdsa.PrivateKey, error) {
-	raw, err := os.ReadFile(path) // #nosec G304 -- operator-supplied path from the environment, read once at startup
+	raw, err := os.ReadFile(path) // #nosec G304 G703 -- operator-supplied path from the environment, read once at startup
 	if err != nil {
 		return nil, fmt.Errorf("reading VOUCHRYX_SIGNING_KEY at %s: %w", path, err)
 	}

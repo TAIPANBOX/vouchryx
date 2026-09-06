@@ -632,6 +632,29 @@ func TestARevocationRefusalDoesNotSayWhetherAKeyExists(t *testing.T) {
 	}
 }
 
+// An unauthorised caller must not reach the parser at all: the same rule
+// scopyx's door and trailryx's ingest gate follow. Before this, a request
+// with no key still had its JSON body decoded (and could push up to 64KiB
+// through that decoder) before authorization was ever checked; a malformed
+// body from an unauthorised caller got the parser's own error, not a refusal
+// naming its actual problem.
+func TestAnUnauthorisedRevocationIsRefusedBeforeItsBodyIsParsed(t *testing.T) {
+	s := newStand(t)
+	buf := captureLog(t)
+	w := s.revoke(t, "{this is not json at all", "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("an unauthorised malformed-body revocation got %d, want 401: %s", w.Code, w.Body)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if body["error"] != "invalid_client" {
+		t.Fatalf("wrong OAuth code: %v", body)
+	}
+	if strings.Contains(buf.String(), "unreadable_revocation_body") {
+		t.Fatalf("the body was parsed before authorization was checked: %s", buf.String())
+	}
+}
+
 // V3: a body this service will not finish reading must not be read at all.
 // Both routes accept operator-or-caller-controlled bytes, and neither had a
 // ceiling before this.
@@ -654,11 +677,13 @@ func TestAnOversizedBodyIsRefused(t *testing.T) {
 	t.Run("revoke", func(t *testing.T) {
 		s := newStand(t)
 		body := `{"actor":"user://acme/alice","reason":"` + huge + `"}`
-		// No key presented on purpose: the size ceiling applies to every
-		// caller, authenticated or not, so this must still be 413 and not 401.
-		w := s.revoke(t, body, "")
+		// Authorization is checked BEFORE the body is decoded, so this must
+		// present a valid key: otherwise this would only prove the auth
+		// check works, not that an oversized body is still capped for a
+		// caller who is allowed to be here at all.
+		w := s.revoke(t, body, revokeTestKey)
 		if w.Code != http.StatusRequestEntityTooLarge {
-			t.Fatalf("an oversized /v1/revoke body got %d, want 413: %s", w.Code, w.Body)
+			t.Fatalf("an oversized /v1/revoke body from an authorised caller got %d, want 413: %s", w.Code, w.Body)
 		}
 	})
 }
