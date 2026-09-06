@@ -58,6 +58,12 @@ type Config struct {
 	TTL        time.Duration
 	Trusted    []Issuer
 	EventsPath string
+	// RevokeKeys are the bearer keys that may call POST /v1/revoke. OPTIONAL,
+	// because making it required would stop every existing bring-up. When it
+	// is empty, /v1/revoke refuses every call rather than accepting one from
+	// whoever can reach the port: the thing that ends an agent's authority
+	// must fail closed, never open.
+	RevokeKeys []string
 }
 
 // DefaultAddr is where this service listens when nothing says otherwise.
@@ -84,6 +90,7 @@ func FromEnv() (Config, error) {
 		Issuer:     os.Getenv("VOUCHRYX_ISSUER"),
 		EventsPath: os.Getenv("VOUCHRYX_EVENTS_PATH"),
 		TTL:        DefaultTTL,
+		RevokeKeys: revokeKeys(os.Getenv("VOUCHRYX_REVOKE_KEYS")),
 	}
 	if c.Issuer == "" {
 		return c, errors.New("VOUCHRYX_ISSUER is required: it is the `iss` this service puts on every token it mints")
@@ -144,7 +151,7 @@ func (c Config) PublicSet() delegation.Set {
 }
 
 func loadKey(path string) (*ecdsa.PrivateKey, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G304 -- operator-supplied path from the environment, read once at startup
 	if err != nil {
 		return nil, fmt.Errorf("reading VOUCHRYX_SIGNING_KEY at %s: %w", path, err)
 	}
@@ -181,7 +188,7 @@ func loadTrusted(spec string) ([]Issuer, error) {
 			return nil, fmt.Errorf(
 				"VOUCHRYX_TRUSTED_ISSUERS entry %q is not `iss|aud|jwks-path`", line)
 		}
-		raw, err := os.ReadFile(parts[2])
+		raw, err := os.ReadFile(parts[2]) // #nosec G304 -- operator-supplied path from the environment, read once at startup
 		if err != nil {
 			return nil, fmt.Errorf("reading the JWKS for %s at %s: %w", parts[0], parts[2], err)
 		}
@@ -209,6 +216,22 @@ func env(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// revokeKeys parses VOUCHRYX_REVOKE_KEYS: comma-separated bearer keys,
+// whitespace trimmed, empty entries dropped. An empty result (including an
+// unset variable) is what leaves /v1/revoke refusing every call.
+func revokeKeys(spec string) []string {
+	if spec == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(spec, ",") {
+		if t := strings.TrimSpace(part); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func splitLines(s string) []string {

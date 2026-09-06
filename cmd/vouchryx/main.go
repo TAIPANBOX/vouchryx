@@ -69,6 +69,13 @@ func main() {
 		Addr:              cfg.Addr,
 		Handler:           srv.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
+		// A caller that trickles bytes, or never sends the last one, must not
+		// tie up a connection here forever: this service already caps every
+		// body at 64KiB, and a slow sender is the same denial by another
+		// route if nothing bounds how long it may take.
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("vouchryx: %v", err)

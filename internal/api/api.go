@@ -28,8 +28,12 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -48,11 +52,18 @@ import (
 const GrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 
 // TokenType is the `issued_token_type` this service returns.
-const TokenType = "urn:ietf:params:oauth:token-type:jwt"
+const TokenType = "urn:ietf:params:oauth:token-type:jwt" // #nosec G101 -- OAuth token-type URN, not a credential
 
 // Source is the `source` on every event this service writes, and it is the row
 // SPEC 6.2 registers for it.
 const Source = "vouchryx"
+
+// maxBodyBytes caps every request body this service reads. Neither route has
+// a reason to see more: a token-exchange request is a handful of JWS strings,
+// and a revocation body is a few short fields. Without a cap, a caller who can
+// reach the port could hand either handler an arbitrarily large body before
+// this service ever gets to refuse it on the merits.
+const maxBodyBytes = 64 << 10
 
 // Server holds what the handlers need. Nothing here is mutable except the
 // revocation list and the proof cache, both of which own their own locking.
@@ -109,7 +120,15 @@ func (s *Server) revocations(w http.ResponseWriter, _ *http.Request) {
 
 // token is RFC 8693 token delegation.
 func (s *Server) token(w http.ResponseWriter, r *http.Request) {
+	// Capped before anything reads it: a token-exchange request is a handful
+	// of JWS strings, and a caller who can reach the port must not be able to
+	// make this service read an arbitrarily large body before refusing it.
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	if err := r.ParseForm(); err != nil {
+		if isBodyTooLarge(err) {
+			refuse(w, http.StatusRequestEntityTooLarge, "invalid_request", "body_too_large", nil)
+			return
+		}
 		refuse(w, http.StatusBadRequest, "invalid_request", "unparseable_form", map[string]any{"detail": err.Error()})
 		return
 	}
@@ -128,6 +147,15 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	deny := func(sub, reason string, detail map[string]any) {
 		s.emit("delegation_denied", sub, nil, merge(detail, map[string]any{"reason": reason}))
 		refuse(w, http.StatusBadRequest, "invalid_grant", reason, detail)
+	}
+	// The scope variant of the same shape: RFC 8693 leaves `scope` to the
+	// authorization server, and a caller that widened it past what its
+	// subject token holds is refused with `invalid_scope` rather than
+	// `invalid_grant`, because the two name different problems even though
+	// both reach the record the same way.
+	denyScope := func(sub, reason string, detail map[string]any) {
+		s.emit("delegation_denied", sub, nil, merge(detail, map[string]any{"reason": reason}))
+		refuse(w, http.StatusBadRequest, "invalid_scope", reason, detail)
 	}
 
 	if r.PostForm.Get("grant_type") != GrantType {
@@ -213,7 +241,20 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		// possession. Without this the whole exchange issues bearer tokens.
 		"cnf": map[string]any{"jkt": thumb},
 	}
+	// V2: a caller may only NARROW scope, never widen it. RFC 8693 section 2.1
+	// leaves `scope` to the authorization server, and copying the request's
+	// scope into the issued token unchecked would let a subject token scoped
+	// `read` exchange into a delegation scoped `read write admin`.
 	if scope := r.PostForm.Get("scope"); scope != "" {
+		held, _ := subject["scope"].(string)
+		requested, heldSet := strings.Fields(scope), strings.Fields(held)
+		if !scopeIsSubsetOf(requested, heldSet) {
+			denyScope(actorSub, "scope_widened", map[string]any{
+				"requested": requested,
+				"held":      heldSet,
+			})
+			return
+		}
 		claims["scope"] = scope
 	}
 
@@ -318,12 +359,41 @@ type revokeBody struct {
 	ExpiresInSec int    `json:"expires_in_seconds"`
 }
 
+// revokeHandler is the thing that ends an agent's authority. V1 hardened it
+// against the finding that anyone who could reach the port could revoke any
+// `jti` or any `subject`, ending every live delegation in the estate.
+//
+// The body is read (capped) before authorization is checked, so an oversized
+// body is refused with the same 413 whether or not the caller ever presents a
+// key: the size ceiling is not itself something worth telling an
+// unauthenticated caller they lack a key for.
 func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	var body revokeBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if isBodyTooLarge(err) {
+			refuse(w, http.StatusRequestEntityTooLarge, "invalid_request", "body_too_large", nil)
+			return
+		}
 		refuse(w, http.StatusBadRequest, "invalid_request", "unreadable_revocation_body", map[string]any{"detail": err.Error()})
 		return
 	}
+
+	// Fail closed, never open: with no key configured, this route refuses
+	// every call rather than accepting one from whoever can reach the port.
+	if len(s.Cfg.RevokeKeys) == 0 {
+		refuse(w, http.StatusForbidden, "access_denied", "revocation_disabled", nil)
+		return
+	}
+	keyActor, ok := s.authorizeRevoke(r)
+	if !ok {
+		// The SAME answer for "no header" and "wrong key": a refusal that told
+		// the two apart would let a caller learn something about which keys
+		// exist without ever holding one.
+		refuse(w, http.StatusUnauthorized, "invalid_client", "revocation_not_authorised", nil)
+		return
+	}
+
 	// The same two fields the tokenfuse declassify endpoint requires, for the
 	// same reason: a revocation with no actor and no reason is an outage
 	// somebody has to reconstruct from timing.
@@ -351,15 +421,102 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 	if body.Subject != "" {
 		e.IssuedBefore = now.Unix()
 	}
-	s.Revs.Add(e)
+	if err := s.Revs.Add(e); err != nil {
+		// A caller who cannot revoke because the list is full must be told
+		// something different from "your revocation is malformed": this is
+		// the operator's own list under load, not a bad request.
+		refuse(w, http.StatusServiceUnavailable, "temporarily_unavailable", "revocation_list_full", map[string]any{"detail": err.Error()})
+		return
+	}
 	s.emit("delegation_revoked", body.Subject, nil, map[string]any{
-		"jti":     body.JTI,
-		"subject": body.Subject,
-		"actor":   body.Actor,
-		"reason":  body.Reason,
-		"expires": e.Expires,
+		"jti":        body.JTI,
+		"subject":    body.Subject,
+		"actor":      body.Actor,
+		"reason":     body.Reason,
+		"expires":    e.Expires,
+		"revoked_by": keyActor,
 	})
+	log.Printf("vouchryx: revoked: jti=%q subject=%q actor=%q reason=%q revoked_by=%q",
+		body.JTI, body.Subject, body.Actor, body.Reason, keyActor)
 	writeJSON(w, http.StatusOK, map[string]any{"revoked": true, "expires": e.Expires})
+}
+
+// authorizeRevoke reads the caller's bearer key and matches it against every
+// configured VOUCHRYX_REVOKE_KEYS entry.
+//
+// The comparison is constant-time and length-gated: length is compared first
+// (a length mismatch is still a refusal, decided before any byte comparison),
+// then `subtle.ConstantTimeCompare` on the equal-length remainder, so neither
+// the length check nor the content check gives a caller a timing signal about
+// which configured key, if any, is closest to what they presented.
+//
+// On a match, the returned actor is a fingerprint of the key, never the key
+// itself: "key:" plus the first 12 hex characters of sha256(key), the same
+// shape tokenfuse's `key_actor` uses, so the record can name the credential
+// that acted without ever holding it.
+func (s *Server) authorizeRevoke(r *http.Request) (keyActor string, ok bool) {
+	presented, hasHeader := bearerToken(r)
+	if !hasHeader {
+		return "", false
+	}
+	for _, key := range s.Cfg.RevokeKeys {
+		if len(key) != len(presented) {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(key), []byte(presented)) == 1 {
+			return "key:" + keyFingerprint(key), true
+		}
+	}
+	return "", false
+}
+
+func bearerToken(r *http.Request) (token string, ok bool) {
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, prefix) {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(auth, prefix)), true
+}
+
+// keyFingerprint is the first 12 hex characters of sha256(key): stable across
+// restarts, and it names which key acted without the record ever holding the
+// bearer secret itself.
+func keyFingerprint(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:6])
+}
+
+// isBodyTooLarge reports whether err is (or wraps) the error
+// http.MaxBytesReader produces once its limit is crossed, so that case can be
+// told apart from an ordinary malformed body and answered 413 rather than 400.
+func isBodyTooLarge(err error) bool {
+	var tooLarge *http.MaxBytesError
+	return errors.As(err, &tooLarge)
+}
+
+// scopeIsSubsetOf reports whether every requested scope is in the held set.
+// An empty requested set is trivially a subset of anything, including nothing
+// held; a non-empty requested set against nothing held is never a subset,
+// which is what refuses a caller whose subject token carries no `scope` claim
+// at all.
+func scopeIsSubsetOf(requested, held []string) bool {
+	if len(requested) == 0 {
+		return true
+	}
+	if len(held) == 0 {
+		return false
+	}
+	heldSet := make(map[string]bool, len(held))
+	for _, s := range held {
+		heldSet[s] = true
+	}
+	for _, s := range requested {
+		if !heldSet[s] {
+			return false
+		}
+	}
+	return true
 }
 
 // isAgentID is SPEC 6.1's constraint on `agent_id`, and the `claimed:` prefix is
