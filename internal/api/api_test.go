@@ -579,6 +579,27 @@ func TestARevocationWithAConfiguredKeyIsRecorded(t *testing.T) {
 	}
 }
 
+// An operator may configure more than one key, for rotation without a gap:
+// the old key still works while the new one is handed out. This test exists
+// because a comparison that only ever checked the first configured key would
+// pass every test above (all of which configure exactly one) while refusing
+// every key but that one.
+func TestASecondConfiguredKeyAlsoAuthorizesARevocation(t *testing.T) {
+	s := newStand(t)
+	const second = "a-second-rotated-in-key"
+	s.srv.Cfg.RevokeKeys = []string{revokeTestKey, second}
+
+	w := s.revoke(t, wellFormedRevocation, second)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the second configured key was refused: %d %s", w.Code, w.Body)
+	}
+	// And the first still works too: adding a key must not have displaced it.
+	w = s.revoke(t, wellFormedRevocation, revokeTestKey)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the first configured key stopped working once a second was added: %d %s", w.Code, w.Body)
+	}
+}
+
 func TestWithNoRevokeKeysConfiguredEveryRevocationIsRefused(t *testing.T) {
 	s := newStand(t)
 	s.srv.Cfg.RevokeKeys = nil
