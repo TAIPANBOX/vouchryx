@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"math/big"
@@ -29,6 +30,12 @@ const (
 	idpIss   = "https://idp.acme.example"
 	audience = "https://vouchryx.acme.example"
 	ourIss   = "https://vouchryx.acme.example"
+
+	// revokeTestKey is the one configured VOUCHRYX_REVOKE_KEYS entry every
+	// stand ships with, so tests about revocation's OWN validation (actor,
+	// reason, the list's ceiling) do not also have to be tests about auth.
+	// The auth tests below configure their own keys, or none, explicitly.
+	revokeTestKey = "test-revoke-key-0123456789abcdef"
 )
 
 type stand struct {
@@ -61,6 +68,7 @@ func newStand(t *testing.T) *stand {
 					Audience: audience,
 					Keys:     delegation.Set{Keys: []delegation.JWK{delegation.FromPublic(&idp.PublicKey, "idp-1")}},
 				}},
+				RevokeKeys: []string{revokeTestKey},
 			},
 			Revs:   revoke.New(),
 			Proofs: delegation.NewVerifier(),
@@ -119,10 +127,21 @@ func (s *stand) proof(t *testing.T, jti string) string {
 
 func (s *stand) exchange(t *testing.T, subject, actor, proof string) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
+	return s.exchangeScope(t, subject, actor, proof, "")
+}
+
+// exchangeScope is `exchange` with a `scope` request parameter, for the tests
+// that are about scope narrowing specifically. `exchange` is this with an
+// empty scope, which sends no `scope` field at all.
+func (s *stand) exchangeScope(t *testing.T, subject, actor, proof, scope string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
 	form := url.Values{
 		"grant_type":    {GrantType},
 		"subject_token": {subject},
 		"actor_token":   {actor},
+	}
+	if scope != "" {
+		form.Set("scope", scope)
 	}
 	req := httptest.NewRequest("POST", "http://vouchryx.test/v1/token", strings.NewReader(form.Encode()))
 	req.Header.Set("content-type", "application/x-www-form-urlencoded")
@@ -134,6 +153,20 @@ func (s *stand) exchange(t *testing.T, subject, actor, proof string) (*httptest.
 	var body map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &body)
 	return w, body
+}
+
+// revoke sends a POST /v1/revoke. bearer is sent as `Authorization: Bearer
+// <bearer>` unless it is the empty string, in which case no header is sent at
+// all: the two are different requests and some tests need each.
+func (s *stand) revoke(t *testing.T, body, bearer string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "http://vouchryx.test/v1/revoke", strings.NewReader(body))
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	w := httptest.NewRecorder()
+	s.srv.Routes().ServeHTTP(w, req)
+	return w
 }
 
 // THE END-TO-END ONE. Everything else here is this with a piece removed.
@@ -288,6 +321,103 @@ func TestATokenMintedForSomebodyElseCannotBeSpentHere(t *testing.T) {
 	}
 }
 
+// V2: RFC 8693 section 2.1 leaves `scope` to the authorization server, and
+// this one must never WIDEN it. A caller may only narrow what its subject
+// token already holds.
+func TestARequestedScopeMustBeHeldByTheSubject(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		heldScope  any // nil omits the claim entirely
+		requested  string
+		wantIssued bool
+	}{
+		{"a subset narrows, and narrowing is allowed", "read write", "read", true},
+		{"a superset widens past what the subject holds", "read", "read write admin", false},
+		{"a subject token with no scope claim holds nothing to narrow from", nil, "read", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStand(t)
+			over := map[string]any{}
+			if c.heldScope != nil {
+				over["scope"] = c.heldScope
+			}
+			w, body := s.exchangeScope(t,
+				s.input(t, "user://acme/alice", over),
+				s.input(t, "agent://acme/triage", nil),
+				s.proof(t, "scope-"+c.name),
+				c.requested)
+			if c.wantIssued {
+				if w.Code != http.StatusOK {
+					t.Fatalf("a narrowing scope was refused: %d %s", w.Code, w.Body)
+				}
+				return
+			}
+			if w.Code == http.StatusOK {
+				t.Fatalf("a widened scope was issued: %s", w.Body)
+			}
+			if body["error"] != "invalid_scope" {
+				t.Fatalf("wrong OAuth code for a widened scope: %v", body)
+			}
+		})
+	}
+}
+
+// The refusal has to reach an operator the same way every other one does: a
+// subject is known by the time scope is checked, so this one is not among the
+// five that `emit` correctly drops for having none.
+func TestAScopeRefusalReachesTheRecord(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.ndjson")
+	w2, err := event.NewWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+
+	s := newStand(t)
+	s.srv.Events = w2
+
+	rec, body := s.exchangeScope(t,
+		s.input(t, "user://acme/alice", map[string]any{"scope": "read"}),
+		s.input(t, "agent://acme/triage", nil),
+		s.proof(t, "scope-record"),
+		"read write admin")
+	if rec.Code == http.StatusOK {
+		t.Fatalf("the stand did not produce a refusal, so this test proves nothing: %s", rec.Body)
+	}
+	if body["error"] != "invalid_scope" {
+		t.Fatalf("wrong OAuth code: %v", body)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("no event was written: %v", err)
+	}
+	var found *event.Event
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		e, err := event.Unmarshal([]byte(line))
+		if err != nil {
+			t.Fatalf("a line is not an event: %v", err)
+		}
+		if e.Type == "delegation_denied" && e.Data["reason"] == "scope_widened" {
+			found = &e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("the scope refusal reached nobody: %s", raw)
+	}
+	if found.AgentID != "agent://acme/triage" {
+		t.Fatalf("the refusal names %q, want the actor that asked", found.AgentID)
+	}
+	if _, ok := found.Data["requested"]; !ok {
+		t.Fatalf("the record does not carry what was requested: %v", found.Data)
+	}
+	if _, ok := found.Data["held"]; !ok {
+		t.Fatalf("the record does not carry what the subject held: %v", found.Data)
+	}
+}
+
 func TestARefusalDoesNotSayWhichCheckFailed(t *testing.T) {
 	// A verifier that narrates its reasoning to whoever presented the token is
 	// an oracle: told which of eight checks failed, an attacker walks them one
@@ -337,10 +467,8 @@ func TestThePublishedSetCarriesNoPrivateKey(t *testing.T) {
 
 func TestRevokingASubjectReachesTheListEnforcementPointsPoll(t *testing.T) {
 	s := newStand(t)
-	body := strings.NewReader(`{"subject":"agent://acme/triage","actor":"user://acme/alice","reason":"credential in a paste"}`)
-	req := httptest.NewRequest("POST", "http://vouchryx.test/v1/revoke", body)
-	w := httptest.NewRecorder()
-	s.srv.Routes().ServeHTTP(w, req)
+	body := `{"subject":"agent://acme/triage","actor":"user://acme/alice","reason":"credential in a paste"}`
+	w := s.revoke(t, body, revokeTestKey)
 	if w.Code != http.StatusOK {
 		t.Fatalf("a revocation was refused: %d %s", w.Code, w.Body)
 	}
@@ -371,13 +499,193 @@ func TestARevocationWithNoActorOrNoReasonIsRefused(t *testing.T) {
 		`{"subject":"agent://acme/t","actor":"user://a/b"}`,
 		`{"actor":"user://a/b","reason":"why"}`,
 	} {
-		req := httptest.NewRequest("POST", "http://vouchryx.test/v1/revoke", strings.NewReader(body))
-		w := httptest.NewRecorder()
-		s.srv.Routes().ServeHTTP(w, req)
+		w := s.revoke(t, body, revokeTestKey)
 		if w.Code == http.StatusOK {
 			t.Fatalf("accepted: %s", body)
 		}
 	}
+}
+
+// V1: the thing that ends an agent's authority must not be reachable by
+// anyone who can reach the port. Without a key configured, nothing can revoke
+// at all; with one configured, only whoever holds it can.
+const wellFormedRevocation = `{"actor":"user://acme/alice","reason":"credential in a paste","subject":"agent://acme/triage"}`
+
+func TestARevocationWithoutAKeyIsRefused(t *testing.T) {
+	s := newStand(t)
+	w := s.revoke(t, wellFormedRevocation, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("a revocation with no Authorization header got %d, want 401: %s", w.Code, w.Body)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if body["error"] != "invalid_client" {
+		t.Fatalf("wrong OAuth code for a missing key: %v", body)
+	}
+}
+
+func TestARevocationWithTheWrongKeyIsRefused(t *testing.T) {
+	s := newStand(t)
+	w := s.revoke(t, wellFormedRevocation, "not-the-configured-key")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("a revocation with the wrong key got %d, want 401: %s", w.Code, w.Body)
+	}
+}
+
+func TestARevocationWithAConfiguredKeyIsRecorded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.ndjson")
+	w2, err := event.NewWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+
+	s := newStand(t)
+	s.srv.Events = w2
+
+	w := s.revoke(t, wellFormedRevocation, revokeTestKey)
+	if w.Code != http.StatusOK {
+		t.Fatalf("a correctly authorised revocation was refused: %d %s", w.Code, w.Body)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("no event was written: %v", err)
+	}
+	var found *event.Event
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		e, err := event.Unmarshal([]byte(line))
+		if err != nil {
+			t.Fatalf("a line is not an event: %v", err)
+		}
+		if e.Type == "delegation_revoked" {
+			found = &e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no delegation_revoked event was written: %s", raw)
+	}
+	// The record names the credential that acted, WITHOUT ever holding it: the
+	// same shape tokenfuse's key_actor uses, first 12 hex of sha256(key).
+	sum := sha256.Sum256([]byte(revokeTestKey))
+	want := "key:" + hex.EncodeToString(sum[:6])
+	if found.Data["revoked_by"] != want {
+		t.Fatalf("revoked_by is %v, want %q", found.Data["revoked_by"], want)
+	}
+	if strings.Contains(string(raw), revokeTestKey) {
+		t.Fatalf("the raw revocation key reached the record: %s", raw)
+	}
+}
+
+// An operator may configure more than one key, for rotation without a gap:
+// the old key still works while the new one is handed out. This test exists
+// because a comparison that only ever checked the first configured key would
+// pass every test above (all of which configure exactly one) while refusing
+// every key but that one.
+func TestASecondConfiguredKeyAlsoAuthorizesARevocation(t *testing.T) {
+	s := newStand(t)
+	const second = "a-second-rotated-in-key"
+	s.srv.Cfg.RevokeKeys = []string{revokeTestKey, second}
+
+	w := s.revoke(t, wellFormedRevocation, second)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the second configured key was refused: %d %s", w.Code, w.Body)
+	}
+	// And the first still works too: adding a key must not have displaced it.
+	w = s.revoke(t, wellFormedRevocation, revokeTestKey)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the first configured key stopped working once a second was added: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestWithNoRevokeKeysConfiguredEveryRevocationIsRefused(t *testing.T) {
+	s := newStand(t)
+	s.srv.Cfg.RevokeKeys = nil
+	for _, bearer := range []string{"", revokeTestKey, "anything"} {
+		w := s.revoke(t, wellFormedRevocation, bearer)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("bearer %q: got %d, want 403 while no key is configured: %s", bearer, w.Code, w.Body)
+		}
+		var body map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &body)
+		if body["error"] != "access_denied" {
+			t.Fatalf("wrong OAuth code with no key configured: %v", body)
+		}
+	}
+}
+
+// A refusal is not an oracle: whoever is asking must not be able to tell "no
+// key was configured for this" apart from "wrong key". Fail-closed with a
+// distinguishable answer would let a caller learn the deployment holds no
+// revocation key at all.
+func TestARevocationRefusalDoesNotSayWhetherAKeyExists(t *testing.T) {
+	s := newStand(t)
+	noHeader := s.revoke(t, wellFormedRevocation, "")
+	wrongKey := s.revoke(t, wellFormedRevocation, "not-the-configured-key")
+	if noHeader.Code != wrongKey.Code {
+		t.Fatalf("status differs: no header %d, wrong key %d", noHeader.Code, wrongKey.Code)
+	}
+	if noHeader.Body.String() != wrongKey.Body.String() {
+		t.Fatalf("bodies differ:\nno header:  %s\nwrong key:  %s", noHeader.Body, wrongKey.Body)
+	}
+}
+
+// An unauthorised caller must not reach the parser at all: the same rule
+// scopyx's door and trailryx's ingest gate follow. Before this, a request
+// with no key still had its JSON body decoded (and could push up to 64KiB
+// through that decoder) before authorization was ever checked; a malformed
+// body from an unauthorised caller got the parser's own error, not a refusal
+// naming its actual problem.
+func TestAnUnauthorisedRevocationIsRefusedBeforeItsBodyIsParsed(t *testing.T) {
+	s := newStand(t)
+	buf := captureLog(t)
+	w := s.revoke(t, "{this is not json at all", "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("an unauthorised malformed-body revocation got %d, want 401: %s", w.Code, w.Body)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if body["error"] != "invalid_client" {
+		t.Fatalf("wrong OAuth code: %v", body)
+	}
+	if strings.Contains(buf.String(), "unreadable_revocation_body") {
+		t.Fatalf("the body was parsed before authorization was checked: %s", buf.String())
+	}
+}
+
+// V3: a body this service will not finish reading must not be read at all.
+// Both routes accept operator-or-caller-controlled bytes, and neither had a
+// ceiling before this.
+func TestAnOversizedBodyIsRefused(t *testing.T) {
+	huge := strings.Repeat("a", 70<<10) // over the 64KiB cap
+	t.Run("token", func(t *testing.T) {
+		s := newStand(t)
+		form := url.Values{
+			"grant_type":    {GrantType},
+			"subject_token": {huge},
+		}
+		req := httptest.NewRequest("POST", "http://vouchryx.test/v1/token", strings.NewReader(form.Encode()))
+		req.Header.Set("content-type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		s.srv.Routes().ServeHTTP(w, req)
+		if w.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("an oversized /v1/token body got %d, want 413: %s", w.Code, w.Body)
+		}
+	})
+	t.Run("revoke", func(t *testing.T) {
+		s := newStand(t)
+		body := `{"actor":"user://acme/alice","reason":"` + huge + `"}`
+		// Authorization is checked BEFORE the body is decoded, so this must
+		// present a valid key: otherwise this would only prove the auth
+		// check works, not that an oversized body is still capped for a
+		// caller who is allowed to be here at all.
+		w := s.revoke(t, body, revokeTestKey)
+		if w.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("an oversized /v1/revoke body from an authorised caller got %d, want 413: %s", w.Code, w.Body)
+		}
+	})
 }
 
 func actOf(t *testing.T, claims map[string]any) delegation.Act {
@@ -589,11 +897,7 @@ func TestEveryRefusalReachesTheOperator(t *testing.T) {
 			return w
 		}},
 		{"a revocation naming nobody", "revocation_names_nobody", func(s *stand) *httptest.ResponseRecorder {
-			req := httptest.NewRequest("POST", "http://vouchryx.test/v1/revoke",
-				strings.NewReader(`{"actor":"user://acme/alice","reason":"x"}`))
-			w := httptest.NewRecorder()
-			s.srv.Routes().ServeHTTP(w, req)
-			return w
+			return s.revoke(t, `{"actor":"user://acme/alice","reason":"x"}`, revokeTestKey)
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

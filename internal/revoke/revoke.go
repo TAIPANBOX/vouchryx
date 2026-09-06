@@ -39,6 +39,7 @@
 package revoke
 
 import (
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -75,11 +76,37 @@ type List struct {
 
 func New() *List { return &List{} }
 
-// Add records a revocation.
-func (l *List) Add(e Entry) {
+// MaxEntries caps how many revocations this list holds at once.
+//
+// Every entry lives up to config.MaxTTL (one hour) whether or not the token it
+// names was ever real, so a caller that could revoke in a loop had an
+// unbounded way to grow this process's memory. A list that only grew would
+// hand every enforcement point that growth on every poll, for ever.
+const MaxEntries = 10_000
+
+// ErrListFull is returned by Add when the list is at MaxEntries after pruning
+// expired entries. A caller that hits this is asked to slow down rather than
+// handed silent growth.
+var ErrListFull = errors.New("revocation list is at its ceiling")
+
+// Add records a revocation, pruning expired entries first so pressure that has
+// already lapsed cannot itself keep a fresh revocation out.
+func (l *List) Add(e Entry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	now := time.Now().Unix()
+	kept := l.entries[:0]
+	for _, x := range l.entries {
+		if x.Expires > now {
+			kept = append(kept, x)
+		}
+	}
+	l.entries = kept
+	if len(l.entries) >= MaxEntries {
+		return ErrListFull
+	}
 	l.entries = append(l.entries, e)
+	return nil
 }
 
 // Active returns the entries still worth checking, oldest expiry first.

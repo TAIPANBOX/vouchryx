@@ -56,6 +56,13 @@ Feature: A delegation that can be proved, and ended
     Then all three answers are identical, and the detail goes to the event
       stream where an operator reads it and an attacker does not
 
+  # @test:TestARequestedScopeMustBeHeldByTheSubject
+  Scenario: A caller cannot widen its own scope
+    Given a subject token scoped to a narrower set than what is requested
+    When the exchange asks for a scope the subject token does not hold
+    Then nothing is issued, because RFC 8693 leaves scope to the
+      authorization server and this one only ever narrows it
+
   # @test:TestRevokingASubjectStopsEveryTokenItAlreadyHolds
   Scenario: An agent is compromised and nobody knows how many tokens it holds
     Given a revocation naming that agent
@@ -76,11 +83,40 @@ Feature: A delegation that can be proved, and ended
     Then it is refused, because otherwise an outage has to be reconstructed
       from timing
 
+  # @test:TestWithNoRevokeKeysConfiguredEveryRevocationIsRefused
+  Scenario: Nobody can revoke until an operator sets a key
+    Given a deployment with no revocation key configured
+    When anybody submits a revocation, with or without a bearer key of their
+      own choosing
+    Then it is refused, because the thing that ends an agent's authority must
+      fail closed and never open
+
+  # @test:TestARevocationWithTheWrongKeyIsRefused
+  Scenario: A revocation with the wrong key is refused
+    Given an operator has configured a revocation key
+    When a revocation is submitted bearing a different key, or none at all
+    Then it is refused the same way either time, so a caller cannot learn
+      whether any key exists from how the refusal reads
+
+  # @test:TestARevocationWithAConfiguredKeyIsRecorded
+  Scenario: A revocation with a configured key is recorded, and names the key
+    Given an operator has configured a revocation key
+    When a revocation is submitted bearing that key
+    Then it is recorded, and it names which key acted by a fingerprint rather
+      than by the key itself
+
   # @test:TestAnExpiredEntryStopsBeingHandedToEveryEnforcementPoint
   Scenario: The list does not grow for ever
     Given an entry whose last matching token has expired
     When enforcement points poll
     Then it is no longer served
+
+  # @test:TestTheRevocationListHasACeiling
+  Scenario: The revocation list does not grow without bound
+    Given a revocation list already at its ceiling
+    When one more revocation is submitted
+    Then it is refused, because a caller that could revoke in a loop would
+      otherwise have an unbounded way to grow this process's memory
 
   # @test:TestThePublishedSetCarriesNoPrivateKey
   Scenario: The published key set is public
@@ -110,6 +146,14 @@ Feature: A delegation that can be proved, and ended
     When the process starts
     Then it refuses and names the variable, because a service trusting
       nothing looks healthy and a service trusting a default issues everything
+
+  # @test:TestAnOversizedBodyIsRefused
+  Scenario: A body larger than this service will read is refused
+    Given a request to exchange a token, or to revoke one, carrying a body
+      past the size this service will read
+    When it is submitted
+    Then it is refused before the rest of it is read, whether or not the
+      caller is one who could otherwise act here
 
 
   # ---------------------------------------------------------------------

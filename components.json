@@ -33,7 +33,8 @@
           "VOUCHRYX_SIGNING_KEY": { "required": true },
           "VOUCHRYX_TRUSTED_ISSUERS": { "required": true },
           "VOUCHRYX_TTL_SECONDS": { "required": false },
-          "VOUCHRYX_EVENTS_PATH": { "required": false }
+          "VOUCHRYX_EVENTS_PATH": { "required": false },
+          "VOUCHRYX_REVOKE_KEYS": { "required": false }
         },
         "missing_required_exit_code": 2
       },
@@ -49,6 +50,10 @@
         "a_launcher_may_probe_something_else": {
           "value": "/.well-known/jwks.json",
           "why": "stack-up polls that rather than the health path above, and it is the better probe here rather than a mistake: /healthz returns 200 the moment the process is up, while the key set answering proves the service can do the one thing it exists for. Declared so a cross-repo check reads a decision instead of a disagreement."
+        },
+        "revoke_keys_default": {
+          "value": "unset: /v1/revoke refuses every call, rather than accepting one from whoever can reach the port",
+          "why": "VOUCHRYX_REVOKE_KEYS is optional because making it REQUIRED would stop every existing bring-up, and an optional value needs its unset behaviour on record somewhere a launcher can read it: fail closed here, never open, is a decision and not an accident of the zero value."
         }
       }
     },

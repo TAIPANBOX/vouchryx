@@ -243,6 +243,43 @@ func TestThePublishedSetIsTheSigningKeysPublicHalfAndNothingElse(t *testing.T) {
 	})
 }
 
+// V1: VOUCHRYX_REVOKE_KEYS is optional, because making it required would stop
+// every existing bring-up. Comma-separated, trimmed, empty entries dropped.
+func TestRevokeKeysAreParsedTrimmedAndOptional(t *testing.T) {
+	key, jwks := ecKeyFile(t), jwksFile(t, "idp-1")
+	base := map[string]string{
+		"VOUCHRYX_ISSUER":          "https://v.example",
+		"VOUCHRYX_SIGNING_KEY":     key,
+		"VOUCHRYX_TRUSTED_ISSUERS": "https://idp.example|aud|" + jwks,
+	}
+
+	withEnv(t, base, func() {
+		c, err := FromEnv()
+		if err != nil {
+			t.Fatalf("a config with no revoke keys was refused: %v", err)
+		}
+		if len(c.RevokeKeys) != 0 {
+			t.Fatalf("unset VOUCHRYX_REVOKE_KEYS produced keys: %v", c.RevokeKeys)
+		}
+	})
+
+	withRevoke := map[string]string{}
+	for k, v := range base {
+		withRevoke[k] = v
+	}
+	withRevoke["VOUCHRYX_REVOKE_KEYS"] = " key-one ,key-two,, key-three "
+	withEnv(t, withRevoke, func() {
+		c, err := FromEnv()
+		if err != nil {
+			t.Fatalf("a config with revoke keys was refused: %v", err)
+		}
+		want := []string{"key-one", "key-two", "key-three"}
+		if strings.Join(c.RevokeKeys, ",") != strings.Join(want, ",") {
+			t.Fatalf("got %v, want %v", c.RevokeKeys, want)
+		}
+	})
+}
+
 func mustFail(t *testing.T) error {
 	t.Helper()
 	_, err := FromEnv()

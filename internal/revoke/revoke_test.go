@@ -1,6 +1,7 @@
 package revoke
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -90,6 +91,40 @@ func TestTheListHandsOutCopies(t *testing.T) {
 	got[0].Reason = "rewritten"
 	if again := l.Active(now); again[0].Reason != "real" {
 		t.Fatal("a caller edited the live list through the slice it was handed")
+	}
+}
+
+// A list that only grew would be handed to every enforcement point on every
+// poll, for ever, and nothing before this stopped a caller growing it without
+// bound: every entry lives up to config.MaxTTL (one hour), so a caller that
+// revoked in a loop could hold up to an hour of unbounded memory growth.
+func TestTheRevocationListHasACeiling(t *testing.T) {
+	now := time.Now()
+	l := New()
+	for i := 0; i < MaxEntries; i++ {
+		if err := l.Add(Entry{JTI: fmt.Sprintf("t%d", i), Expires: now.Add(time.Hour).Unix()}); err != nil {
+			t.Fatalf("entry %d was refused before the ceiling: %v", i, err)
+		}
+	}
+	if err := l.Add(Entry{JTI: "one-too-many", Expires: now.Add(time.Hour).Unix()}); err == nil {
+		t.Fatal("the list grew past its ceiling")
+	}
+
+	// Pruning makes room again: the ceiling is about live pressure, not a
+	// permanent lockout once it is ever reached. The last entry of THIS fill
+	// already has a past expiry, so `Add`'s own prune-before-append removes it
+	// on the very next call, before the cap is checked against what remains.
+	l2 := New()
+	for i := 0; i < MaxEntries-1; i++ {
+		if err := l2.Add(Entry{JTI: fmt.Sprintf("u%d", i), Expires: now.Add(time.Hour).Unix()}); err != nil {
+			t.Fatalf("entry %d was refused before the ceiling: %v", i, err)
+		}
+	}
+	if err := l2.Add(Entry{JTI: "already-expired", Expires: now.Add(-time.Minute).Unix()}); err != nil {
+		t.Fatalf("filling the last slot was refused: %v", err)
+	}
+	if err := l2.Add(Entry{JTI: "room-again", Expires: now.Add(time.Hour).Unix()}); err != nil {
+		t.Fatalf("a list holding one already-expired entry still refused a fresh one: %v", err)
 	}
 }
 

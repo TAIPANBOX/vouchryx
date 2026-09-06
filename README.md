@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-44-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-61-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -244,7 +244,7 @@ pick one.
 
 ## Testing
 
-41 tests. Tier T3: these are authorization decisions where a wrong answer is
+53 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;
@@ -252,8 +252,10 @@ nine were caught immediately and one survived.** Closing it is
 `TestATokenIsVerifiedWithTheKeyItNamesAndNoOther`, which moved to
 `agent-stack-go` with the code it guards.
 
-Coverage: `revoke` 95%, `config` 93%, `api` 75%. The JOSE, DPoP and chain
-coverage moved with the code to `agent-stack-go`.
+Coverage: `revoke` 96.8% (was 95%), `config` 94.0% (was 93%), `api` 84.5% (was
+75%), measured 2026-09-06 with `go test ./internal/<pkg>/... -cover` after
+revocation authorization, scope narrowing and the size/ceiling limits landed.
+The JOSE, DPoP and chain coverage moved with the code to `agent-stack-go`.
 
 ```bash
 go test ./...
