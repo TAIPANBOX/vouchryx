@@ -273,12 +273,18 @@ Stated here rather than left to be discovered.
   here that needs a store before the service is trusted with a real incident.
 - **The DPoP replay cache is in memory too**, bounded by a 60-second window. For
   one window after a restart, a captured proof could be replayed once.
-- **No enforcement point verifies these tokens on a request path yet.** The
-  library half (A2 in the plan) is built in both languages as of 2026-08-26,
-  and the revocation consumer beside it, so the estate can now read what this
-  issues and act on a revocation. What is still missing is a caller: no
-  deployed request path checks a delegation token or polls `/v1/revocations`.
-  Until one does, this service is correct and unconsumed.
+- **One enforcement point verifies these tokens on a request path, and it is
+  the only one.** TokenFuse's gateway has been that caller since 2026-08-26:
+  `crates/gateway/src/revocations.rs` polls `GET /v1/revocations` in a
+  background task, installs the snapshot under a lock, and both doors read it
+  synchronously through `chainproof::resolve`, the LLM proxy in `proxy.rs` and
+  the MCP broker in `mcpbroker.rs`, where a revoked delegation answers 401. It
+  is off until `TOKENFUSE_DELEGATION_REVOCATIONS` names a URL; naming one makes
+  the first fetch a startup condition, the fail mode defaults to closed, and
+  naming it with no issuer configured is refused with the same exit code as any
+  other check that could never fire. What is still missing is a second caller:
+  no Go service in the estate sets `delegation.Options.Revoked`, so
+  `delegation.Revocations` in `agent-stack-go` is a cache nothing constructs.
 - **Where a `subject_token` comes from is out of scope.** This accepts one from
   a configured issuer; obtaining it from a customer's own IdP is a deployment
   shape that does not exist yet.
