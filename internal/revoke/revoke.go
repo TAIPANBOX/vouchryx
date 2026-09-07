@@ -1,15 +1,29 @@
-// Package revoke holds the revocation list enforcement points are meant to
-// consult, and which none of them consulted until 2026-08-26.
+// Package revoke holds the revocation list enforcement points consult, which
+// none of them consulted until 2026-08-26 and tokenfuse's gateway has consulted
+// since.
 //
 // # What that sentence used to say, and why the correction is part of the record
 //
 // It said "the revocation list every enforcement point consults", present
 // tense, from the day this package was written. Nothing polled `/v1/revocations`
 // in either language: tokenfuse's two doors passed a closure answering false and
-// no Go consumer set `delegation.Options.Revoked`. The consumer now exists on
-// both sides (`delegation.Revocations` in agent-stack-go,
-// `tokenfuse_delegation::revocations` in tokenfuse) and no request path calls it
-// yet, so the honest tense is the one above.
+// no Go consumer set `delegation.Options.Revoked`.
+//
+// That correction went stale eighty-seven minutes after it was committed, which
+// is the more useful half of the record. tokenfuse's
+// `crates/gateway/src/revocations.rs` landed the same evening: one background
+// poller per process, a snapshot installed under a lock, and a synchronous read
+// at both doors through `chainproof::resolve`, where a revoked delegation
+// answers 401. So the list is consulted, by one caller, whenever
+// `TOKENFUSE_DELEGATION_REVOCATIONS` names a URL. The Go side is the half still
+// waiting: `delegation.Revocations` in agent-stack-go is a cache no service
+// constructs.
+//
+// The reason both sentences are kept rather than replaced: a status line about
+// what nobody has built yet is true for as long as it takes somebody to build
+// it, and nothing makes it announce that it has expired. Anyone reading this
+// package should date what it claims, here and in the README's NOT PROVEN
+// section, against the code it names.
 //
 // # Why this is the point of the whole service
 //
