@@ -19,6 +19,7 @@
   ],
   "schema": "taipanbox.dev/components/v1",
   "repo": "TAIPANBOX/vouchryx",
+  "distribution": "not distributed: built from source, no tag yet; the delegation token issuer and revocation list the stack launchers build in",
   "components": [
     {
       "name": "vouchryx",
