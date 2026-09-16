@@ -203,8 +203,13 @@ server and requiring it to accept, or refuse, what the client produced.
 
 **Not here.** Signing, verification, the algorithm allowlist, the DPoP proof
 check and the `act` chain are `agent-stack-go/delegation`, from v0.8.0. This
-service imports it; so do `wardryx`, `idryx`, `scopyx`, `heraldyx` and
-`mockryx` when they verify what it issues.
+service imports it, and today it is the only Go service that does: measured
+2026-09-16 over every Go repository in the stack, `wardryx`, `idryx`,
+`scopyx`, `heraldyx` and `mockryx` import nothing from that package. What this
+service issues is verified at TokenFuse's two doors (its Rust `delegation`
+crate, offline, from a configured issuer and JWKS) when an operator turns
+that on, and nowhere else yet. Wardryx reads a `chain_proven` fact a door
+established; it does not verify a token itself.
 
 That is not tidiness. Two implementations of "is this signature valid" that
 disagree is a hole nobody sees until somebody walks through it, and the issuer
