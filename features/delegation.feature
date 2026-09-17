@@ -226,3 +226,65 @@ Feature: A delegation that can be proved, and ended
     Then it exits with the declared code every time, a variable declared
       optional does not do the same, and with everything set it answers its
       declared health path to a caller holding no credential
+
+  # The hand-off, `@decided 2026-09-17`: a token this service issued comes back
+  # as the subject of a new exchange so the delegation grows a hop. Self-trust
+  # is the operator's explicit configuration, never a default.
+
+  # @test:TestAHolderHandsItsAuthorityOnAndTheResultIsBoundToTheDelegate
+  Scenario: A holder hands its authority on and the result is bound to the delegate
+    Given a bound token an agent holds and a delegate credential bound to the delegate's key
+    When the holder exchanges them proving its own key
+    Then the result names the delegate newest, keeps the root, and is bound to the delegate's key
+    And the delegate can hand off again the same way
+
+  # @test:TestAStolenBoundTokenIsNotReboundToTheThiefsKey
+  Scenario: A stolen bound token is not rebound to the thief's key
+    Given a bound token presented with a proof from another key
+    When it is exchanged, with or without a bound credential for the claimed actor
+    Then nothing is issued and the log says the presenter did not hold the key
+
+  # @test:TestARevokedTokenIsNotLaunderedByExchange
+  Scenario: A revoked token is not laundered by exchange
+    Given a token revoked by id, or by its subject
+    When its holder exchanges it with a bound delegate credential
+    Then nothing is issued and the log names the revocation
+
+  # @test:TestRevokingAnAgentInsideTheChainStopsTheHandOffButNotAReissue
+  Scenario: Revoking an agent inside the chain stops the hand-off but not a reissue
+    Given a token whose chain is a person, an agent and a second agent
+    And a revocation naming the first agent
+    When the second agent hands the token on
+    Then it is refused
+    And a fresh delegation naming the first agent, issued after the revocation, is still issued
+
+  # @test:TestADelegatorCannotMintATokenNamingADelegateButBoundToItsOwnKey
+  Scenario: A delegator cannot mint a token naming a delegate but bound to its own key
+    Given a bound token and an unbound delegate credential
+    When the holder exchanges them
+    Then nothing is issued
+
+  # @test:TestABoundActorCredentialIsExchangedOnlyByItsHolder
+  Scenario: A bound actor credential is exchanged only by its holder
+    Given an unbound person token and an agent credential bound to a key
+    When it is exchanged with that key, and again with another
+    Then the first is issued bound to that key and the second is refused
+
+  # @test:TestAnExchangeWithoutAScopeRequestInheritsTheSubjectsScope
+  Scenario: An exchange without a scope request inherits the subject's scope
+    Given a subject token scoped read
+    When it is exchanged without asking for a scope
+    Then the result carries read, and asking for write is still refused
+
+  # @test:TestADelegationTokenIsNotAnActorCredential
+  Scenario: A delegation token is not an actor credential
+    Given an actor credential that itself carries a chain
+    When it is exchanged
+    Then nothing is issued
+
+  # @test:TestHandOffsSweepEveryDepthToTheCap
+  Scenario: Hand-offs sweep every depth to the cap
+    Given tokens carrying every chain length from one actor to the cap
+    When each is handed on
+    Then every one below the cap is issued bound to the delegate's key with the chain intact
+    And the one at the cap is refused
