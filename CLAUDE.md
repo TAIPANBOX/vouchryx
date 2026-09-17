@@ -202,7 +202,7 @@ not a convenience.
 
     **The 2026-09-17 review's F5 sharpens this for the EVENT half
     specifically; the log half stays unconditional either way.** A
-    mid-exchange refusal is filed in the event stream under whichever
+    mid-exchange `deny` is filed in the event stream under whichever
     identity is both available and agent-shaped when the refusal fires,
     never one assumed from the shape of the request. A subject token naming
     no `sub` at all, or one whose own `act` chain cannot be read, files
@@ -210,10 +210,11 @@ not a convenience.
     shaped like a hand-off without ever producing a holder to file under, a
     holder can only be read FROM that chain. From there, and where the
     chain could be read, a refusal files under the chain's holder: empty
-    and so dropped on an ordinary first hop, the last actor and so kept on
-    the hand-off path. From the actor's own verification onward it is the
-    actor's `sub`, kept when that is an agent://, dropped otherwise by the
-    same SPEC 6.1 guard: `actor_token_is_a_delegation` against an actor
+    and so dropped on an ordinary first hop, the last actor on the hand-off
+    path, kept when that is agent-shaped (the chain accepts `user://`
+    entries and the guard is lowercase-only). From the actor's `sub` being
+    read onward it is the actor's `sub`, kept when that is an agent://,
+    dropped otherwise by the same SPEC 6.1 guard: `actor_token_is_a_delegation` against an actor
     whose own `sub` is a `user://` is filed nowhere but the log, exactly
     like a `user://` subject ever was.
     *(gate: `scripts/every-refusal-reaches-the-operator.sh`, which DISCOVERS
@@ -221,8 +222,9 @@ not a convenience.
     sit inside `refuse`. A status held in a variable counts as not-a-success,
     because what it will be at run time cannot be read there. Three cases in
     `gates-have-teeth.sh`. Test: `TestEveryRefusalReachesTheOperator` proves
-    the log half unconditionally, five kinds, each red before the change
-    with an empty log. Scenario: `features/delegation.feature`)*
+    the log half unconditionally, five kinds, the first three each red
+    before the change with an empty log and the two from #27 red because
+    the exchange still answered 200. Scenario: `features/delegation.feature`)*
 
 13. **A bound token is exchanged only by its holder, and the key the result is
     bound to is never the presenter's choice.** `@decided 2026-09-17`: this
