@@ -105,6 +105,12 @@ var ErrListFull = errors.New("revocation list is at its ceiling")
 
 // Add records a revocation, pruning expired entries first so pressure that has
 // already lapsed cannot itself keep a fresh revocation out.
+//
+// It prunes against the wall clock while Active and Revoked take the caller's
+// clock: in production both are the wall clock, and in a test that freezes the
+// injected clock in the past an entry added now is pruned at once. A test about
+// revocation runs on the wall clock for that reason; known, and left so rather
+// than threading a clock into a path that has one caller.
 func (l *List) Add(e Entry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -147,12 +153,30 @@ func (l *List) Active(now time.Time) []Entry {
 // second as the revocation alive, which is exactly the second an incident
 // happens in.
 func (l *List) Revoked(jti, subject string, issuedAt int64, now time.Time) (Entry, bool) {
-	for _, e := range l.Active(now) {
+	return l.RevokedAny(jti, []string{subject}, issuedAt, now)
+}
+
+// RevokedAny is Revoked over every party in a token's chain at once: the
+// subject at the root and every actor in `act`, in the order the caller gives
+// them, first hit wins.
+//
+// A subject entry names a PARTY, and the party an operator revokes when an
+// agent is compromised sits in `act`, with a human at the root. Asking about
+// `sub` alone matched nothing for such an entry and revoked nobody, which is
+// what every enforcement point did until 2026-09-17; one `Active` call serves
+// the whole chain so a 32-entry chain costs one prune, not 32.
+func (l *List) RevokedAny(jti string, parties []string, issuedAt int64, now time.Time) (Entry, bool) {
+	active := l.Active(now)
+	for _, e := range active {
 		if e.JTI != "" && e.JTI == jti {
 			return e, true
 		}
-		if e.Subject != "" && e.Subject == subject && issuedAt <= e.IssuedBefore {
-			return e, true
+	}
+	for _, party := range parties {
+		for _, e := range active {
+			if e.Subject != "" && e.Subject == party && issuedAt <= e.IssuedBefore {
+				return e, true
+			}
 		}
 	}
 	return Entry{}, false

@@ -139,3 +139,36 @@ func TestARevocationWithNoActorAndNoReasonIsStillRecorded(t *testing.T) {
 		t.Fatal("this layer must record what it is given; the door does the refusing")
 	}
 }
+
+func TestRevokedAnyMatchesAPartyAtAnyPosition(t *testing.T) {
+	// A subject entry names a PARTY; the exchange asks about every party in the
+	// incoming token's chain at once, so an agent revoked by name is found
+	// whether it is the root, the middle or the newest actor.
+	l := New()
+	now := time.Unix(1_800_000_000, 0)
+	if err := l.Add(Entry{Subject: "agent://acme/triage", IssuedBefore: now.Unix(), Expires: now.Add(time.Hour).Unix(), Actor: "user://acme/op", Reason: "compromised"}); err != nil {
+		t.Fatal(err)
+	}
+	chain := []string{"user://acme/alice", "agent://acme/triage", "agent://acme/runbook"}
+	for _, order := range [][]string{chain, {chain[1], chain[0], chain[2]}, {chain[2], chain[0], chain[1]}} {
+		if _, ok := l.RevokedAny("tok-x", order, now.Unix(), now); !ok {
+			t.Fatalf("the agent at position %v was not found", order)
+		}
+	}
+	if _, ok := l.RevokedAny("tok-x", []string{"user://acme/alice", "agent://acme/runbook"}, now.Unix(), now); ok {
+		t.Fatal("a chain not naming the revoked agent was matched")
+	}
+	if _, ok := l.RevokedAny("tok-x", chain, now.Unix()+1, now); ok {
+		t.Fatal("a token issued after the revocation was matched: revoking is not banning")
+	}
+	if e, ok := l.RevokedAny("", []string{"user://acme/alice"}, 0, now); ok || e.JTI != "" {
+		t.Fatal("an empty jti matched a subject entry or a jti entry")
+	}
+	// A jti entry is found regardless of the parties asked about.
+	if err := l.Add(Entry{JTI: "tok-y", Expires: now.Add(time.Hour).Unix(), Actor: "user://acme/op", Reason: "leaked"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := l.RevokedAny("tok-y", nil, now.Unix(), now); !ok {
+		t.Fatal("a jti entry was not found with no parties at all")
+	}
+}

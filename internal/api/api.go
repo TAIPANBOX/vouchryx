@@ -182,23 +182,19 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		deny("", "bad_subject_token", map[string]any{"detail": err.Error()})
 		return
 	}
-	actor, _, err := s.verifyInput(r.PostForm.Get("actor_token"))
-	if err != nil {
-		deny("", "bad_actor_token", map[string]any{"detail": err.Error()})
-		return
-	}
-
 	sub, _ := subject["sub"].(string)
-	actorSub, _ := actor["sub"].(string)
-	if sub == "" || actorSub == "" {
+	if sub == "" {
 		deny("", "token_names_no_subject", nil)
 		return
 	}
 
-	// The chain the SUBJECT token already carries, extended by this actor. Read
-	// with `ReadAct` so a chain that arrived from another exchange keeps its
-	// direction: RFC 8693 nests current-first and the estate records root-first,
-	// and a reversal here would produce a token that verifies and lies.
+	// The chain the SUBJECT token already carries, read before anything else
+	// is decided about it: it names the current HOLDER (the last actor, the
+	// agent a refusal from here is filed under) and every party the revocation
+	// list is asked about. Read with `ReadAct` so a chain that arrived from
+	// another exchange keeps its direction: RFC 8693 nests current-first and
+	// the estate records root-first, and a reversal here would produce a token
+	// that verifies and lies.
 	var prior []string
 	if raw, ok := subject["act"]; ok {
 		var act delegation.Act
@@ -206,10 +202,88 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal(b, &act)
 		}
 		if prior, err = delegation.ReadAct(&act); err != nil {
-			deny(actorSub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
+			deny("", "bad_delegation_chain", map[string]any{"detail": err.Error()})
 			return
 		}
 	}
+	holder := ""
+	if len(prior) > 0 {
+		holder = prior[len(prior)-1]
+	}
+
+	// A BOUND subject token is exchanged only by its holder. RFC 9449 makes
+	// a token carrying `cnf.jkt` useless to anyone but the key's holder, and
+	// this door is not the one place in the estate where that stops being
+	// true: a lifted token presented with a fresh proof from another key
+	// would otherwise come back bound to the thief's key, which is a bearer
+	// token with an extra step. Until 2026-09-17 nothing here compared the
+	// two. A hand-off to another party is the holder's act (it presents, and
+	// the delegate's key comes from the delegate's own credential, below).
+	subjectJKT := confirmationKey(subject)
+	if subjectJKT != "" && subjectJKT != thumb {
+		deny(holder, "subject_key_mismatch", map[string]any{"bound_to": subjectJKT, "presented": thumb})
+		return
+	}
+
+	// A REVOKED subject token issues nothing. The list every enforcement point
+	// polls was not consulted by the door that issues, so a revoked token could
+	// be exchanged into a fresh one the list did not name (found 2026-09-17).
+	// Every party in the chain is asked about, root first, because a subject
+	// revocation names a party wherever it stands; an input with no `jti` or
+	// no `iat` (an IdP's token) is asked about with the empty id and the
+	// epoch, which matches every subject entry naming it, fail closed.
+	subJTI, _ := subject["jti"].(string)
+	subIAT, _ := asUnix(subject["iat"])
+	if e, ok := s.Revs.RevokedAny(subJTI, append([]string{sub}, prior...), subIAT, s.now()); ok {
+		deny(holder, "subject_revoked", map[string]any{
+			"jti": e.JTI, "subject": e.Subject, "actor": e.Actor, "reason": e.Reason,
+		})
+		return
+	}
+
+	actor, _, err := s.verifyInput(r.PostForm.Get("actor_token"))
+	if err != nil {
+		deny(holder, "bad_actor_token", map[string]any{"detail": err.Error()})
+		return
+	}
+	actorSub, _ := actor["sub"].(string)
+	if actorSub == "" {
+		deny(holder, "token_names_no_subject", nil)
+		return
+	}
+	// An actor credential names ONE party. A delegation token carrying its own
+	// `act` is not that, and accepting one here would let a chain be spliced
+	// into another chain past the depth and cycle rules the record enforces.
+	if _, carriesChain := actor["act"]; carriesChain {
+		deny(actorSub, "actor_token_is_a_delegation", nil)
+		return
+	}
+
+	// WHOSE KEY THE RESULT IS BOUND TO. The key comes from a verified token or
+	// from the checked proof, never from a request field:
+	//   - hand-off (bound subject, presented by its holder): the delegate's
+	//     own credential must carry `cnf.jkt` (RFC 9449 section 6) and the
+	//     result binds to it; without one the holder would mint a token
+	//     naming the delegate but bound to its own key, the delegator wearing
+	//     the delegate's name, so it is refused;
+	//   - first hop with a bound actor credential: the presenter IS the actor
+	//     and must prove that key, so the proof must match it;
+	//   - first hop with an unbound actor credential: the proof's key, as
+	//     always.
+	actorJKT := confirmationKey(actor)
+	if subjectJKT != "" && actorJKT == "" {
+		deny(actorSub, "actor_credential_unbound", nil)
+		return
+	}
+	if subjectJKT == "" && actorJKT != "" && actorJKT != thumb {
+		deny(actorSub, "actor_key_mismatch", map[string]any{"bound_to": actorJKT, "presented": thumb})
+		return
+	}
+	outJKT, cnfSource := thumb, "proof"
+	if actorJKT != "" {
+		outJKT, cnfSource = actorJKT, "actor_token"
+	}
+
 	chain, err := delegation.Extend(prior, actorSub)
 	if err != nil {
 		deny(actorSub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
@@ -237,9 +311,10 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		"exp": now.Add(s.Cfg.TTL).Unix(),
 		"jti": jti,
 		"act": act,
-		// RFC 9449 section 6: the token is bound to the key that proved
-		// possession. Without this the whole exchange issues bearer tokens.
-		"cnf": map[string]any{"jkt": thumb},
+		// RFC 9449 section 6: the token is bound to a key somebody proved or
+		// an issuer attested (`outJKT`, above). Without this the whole exchange
+		// issues bearer tokens.
+		"cnf": map[string]any{"jkt": outJKT},
 	}
 	// V2: a caller may only NARROW scope, never widen it. RFC 8693 section 2.1
 	// leaves `scope` to the authorization server, and copying the request's
@@ -256,6 +331,23 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		claims["scope"] = scope
+	} else if held, _ := subject["scope"].(string); held != "" {
+		// No request: the scope follows the token. RFC 8693 section 2.2.1
+		// reads an omitted `scope` as identical to the subject's, and a token
+		// that dropped it on the way would widen what the subject held to
+		// whatever a consumer reads absence as (found 2026-09-17).
+		claims["scope"] = held
+	}
+
+	// The RECORD's chain is not the RFC's: `act` holds actors only, and
+	// agent-passport's `on_behalf_of` is root-first WITH the subject at its
+	// head. Handing `chain` straight to the event would write a delegation with
+	// the human missing from it. Built before signing, so a token this refuses
+	// is never signed at all.
+	recorded, err := delegation.Chain(sub, act)
+	if err != nil {
+		deny(actorSub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
+		return
 	}
 
 	signed, err := delegation.SignES256(s.Cfg.SigningKey, s.Cfg.KeyID, claims)
@@ -264,25 +356,21 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The RECORD's chain is not the RFC's: `act` holds actors only, and
-	// agent-passport's `on_behalf_of` is root-first WITH the subject at its
-	// head. Handing `chain` straight to the event would write a delegation with
-	// the human missing from it.
-	recorded, err := delegation.Chain(sub, act)
-	if err != nil {
-		deny(actorSub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
-		return
-	}
 	// The ACTOR, not the subject: this record is about the agent that received
 	// the authority, and `recorded` already carries the whole chain root-first
 	// with the human at its head, so nothing is lost by not repeating it here.
-	s.emit("delegation_issued", actorSub, recorded, map[string]any{
+	issued := map[string]any{
 		"jti":            jti,
-		"cnf_jkt":        thumb,
+		"cnf_jkt":        outJKT,
+		"cnf_source":     cnfSource,
 		"subject_issuer": subIss,
 		"expires_at":     now.Add(s.Cfg.TTL).Unix(),
 		"chain_depth":    len(chain),
-	})
+	}
+	if subJTI != "" {
+		issued["subject_jti"] = subJTI
+	}
+	s.emit("delegation_issued", actorSub, recorded, issued)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":      signed,
 		"issued_token_type": TokenType,
@@ -591,6 +679,27 @@ func newJTI() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b[:]), nil
+}
+
+// confirmationKey reads `cnf.jkt` (RFC 9449 section 6) off verified claims, or
+// "" for a token that carries none: `cnf` without `jkt` counts as unbound.
+func confirmationKey(claims map[string]any) string {
+	cnf, ok := claims["cnf"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	jkt, _ := cnf["jkt"].(string)
+	return jkt
+}
+
+// asUnix reads a numeric claim as a Unix second; false when it is absent or
+// not a number.
+func asUnix(v any) (int64, bool) {
+	f, ok := v.(float64)
+	if !ok {
+		return 0, false
+	}
+	return int64(f), true
 }
 
 func absoluteURL(r *http.Request) string {

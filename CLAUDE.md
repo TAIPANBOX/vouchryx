@@ -196,3 +196,59 @@ not a convenience.
     `gates-have-teeth.sh`. Test: `TestEveryRefusalReachesTheOperator`, three
     kinds, each red before the change with an empty log. Scenario:
     `features/delegation.feature`)*
+
+13. **A bound token is exchanged only by its holder, and the key the result is
+    bound to is never the presenter's choice.** `@decided 2026-09-17`: this
+    service supports the hand-off, a token it issued coming back as the
+    `subject_token` of a new exchange so the delegation grows a hop, with the
+    operator adding this service's own issuer to `VOUCHRYX_TRUSTED_ISSUERS`
+    explicitly, never by default. On that path the presenter is the HOLDER: an
+    input carrying `cnf.jkt` must match the proof's key (`subject_key_mismatch`),
+    the delegate's own credential must carry `cnf.jkt` and the result binds to
+    it (`actor_credential_unbound` otherwise, since a delegator that minted a
+    token naming the delegate but bound to its own key would be wearing the
+    delegate's name), and a first hop with a bound actor credential is
+    presented by that credential's holder (`actor_key_mismatch`). An actor
+    credential carrying `act` is a delegation token, not a credential
+    (`actor_token_is_a_delegation`). Until 2026-09-17 `verifyInput` compared
+    nothing with the proof, so a lifted bound token presented with a fresh
+    proof from another key came back bound to the thief's key. The response
+    shape is unchanged for unbound inputs, which is every deployment today
+    (invariant 15 adds a `scope` claim a subject held, and `delegation_issued`
+    gains `cnf_source`, which SPEC 6.1 tells consumers to ignore when unknown).
+    A refused hand-off attempt with a lifted token is filed under the HOLDER
+    named in the token's chain, the victim, because that is whose history it
+    belongs to; the event's `presented` thumbprint is the thief's key.
+    *(tests: `TestAHolderHandsItsAuthorityOnAndTheResultIsBoundToTheDelegate`,
+    `TestAStolenBoundTokenIsNotReboundToTheThiefsKey`,
+    `TestADelegatorCannotMintATokenNamingADelegateButBoundToItsOwnKey`,
+    `TestABoundActorCredentialIsExchangedOnlyByItsHolder`,
+    `TestADelegationTokenIsNotAnActorCredential`,
+    `TestHandOffsSweepEveryDepthToTheCap`; all red first against a68795d;
+    mutants: each check dropped in turn and the result bound to the proof key
+    always, each caught by its test. Scenarios: `features/delegation.feature`)*
+
+14. **A revoked token issues nothing, and a subject revocation names a party
+    wherever it stands in the chain.** The list every enforcement point polls
+    was not consulted by the door that issues, so until 2026-09-17 a revoked
+    token could be exchanged into a fresh one the list did not name. The
+    exchange now asks `List.RevokedAny` about the incoming token's `jti` and
+    every party in its chain, root first (`subject_revoked`); an input with no
+    `jti` or `iat` is asked about with the empty id and the epoch, which is
+    fail closed against subject entries. Invariant 7 is unchanged: a fresh
+    delegation issued after the revocation moment is not covered.
+    *(tests: `TestARevokedTokenIsNotLaunderedByExchange`,
+    `TestRevokingAnAgentInsideTheChainStopsTheHandOffButNotAReissue`,
+    `TestRevokedAnyMatchesAPartyAtAnyPosition`; mutants: the lookup dropped, and
+    the list asked about the root alone, each caught. Scenarios:
+    `features/delegation.feature`)*
+
+15. **Scope follows the token.** An exchange that asks for no `scope` issues a
+    token carrying the subject's own `scope` claim; asking for more than the
+    subject holds is refused as before (invariant of #V2). Until 2026-09-17 an
+    omitted request dropped the claim, so a `read` subject exchanged into a
+    token with no scope at all, which widens what the subject held to whatever
+    a consumer reads absence as.
+    *(test: `TestAnExchangeWithoutAScopeRequestInheritsTheSubjectsScope`, red
+    first; mutant: inheritance dropped, caught. Scenario:
+    `features/delegation.feature`)*

@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-61-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-75-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -119,7 +119,7 @@ switch, different axis, and the second is the one an incident needs.
 | | |
 |---|---|
 | `POST /v1/token` | RFC 8693 exchange. Input: `subject_token` and `actor_token`, plus a `DPoP` header. Output: a short-lived JWT with nested `act` and `cnf.jkt`. |
-| `POST /v1/revoke` | By `jti` for one token, or by `subject` for every token an agent already holds. `actor` and `reason` are required. |
+| `POST /v1/revoke` | By `jti` for one token, or by `subject` for every token naming that agent anywhere in its chain: at this door since 2026-09-17, and at the enforcement points from agent-stack-go#61 and tokenfuse#298 on. `actor` and `reason` are required. A `jti` revocation ends one token, not the ones already exchanged from it. |
 | `GET /v1/revocations` | What enforcement points poll. Carries `as_of`, so an empty list and an unreachable service are not the same answer. |
 | `GET /.well-known/jwks.json` | Public keys, so verification is offline. |
 
@@ -193,6 +193,26 @@ same key, per request.
   -htu http://127.0.0.1:4100/v1/messages
 ```
 
+**The second hop.** A token this service issued comes back as the
+`subject_token` of a new exchange, so the delegation grows a hop: the HOLDER
+presents it, proves its own key, and names the delegate through an
+`actor_token` the delegate's IdP bound to the delegate's key (`cnf.jkt`, RFC
+9449 section 6). The result keeps the root, appends the delegate to `act`, and
+is bound to the delegate's key. For that this service must trust its own
+issuer as an input, which is the operator's explicit line and never a default:
+
+```sh
+# one issuer per line: the IdP, then this service's own key set
+VOUCHRYX_TRUSTED_ISSUERS=$'https://idp.local|http://127.0.0.1:4310|idp.jwks.json\nhttp://127.0.0.1:4310|http://127.0.0.1:4310|signing.jwks.json'
+```
+
+The token being handed on must have been minted for this service's own
+audience (`audience` omitted, or equal to `VOUCHRYX_ISSUER`), or the self-trust
+entry refuses it. A bound token presented by anyone but its holder issues
+nothing, an unbound delegate credential issues nothing (the delegator would be
+minting a token in the delegate's name bound to its own key), and a revoked
+token issues nothing, whichever party in its chain the revocation names.
+
 **It is a client and it verifies nothing.** Every check stays here, at the
 service, which is the only shape in which shipping a minting helper beside a
 service that refuses for a living is safe: a wrong credential minted there is
@@ -249,7 +269,7 @@ pick one.
 
 ## Testing
 
-53 tests. Tier T3: these are authorization decisions where a wrong answer is
+63 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;
@@ -299,6 +319,10 @@ Stated here rather than left to be discovered.
 - **No fuzzing**, no load measurement, no TLS. It binds HTTP and warns when the
   bind is routable; terminating TLS is the deployment's job and is not
   demonstrated.
+- **The hand-off has not been run against a real IdP's bound tokens**, only
+  against credentials the tests bind the same way; and there is no lineage in
+  a token, so revoking a parent by `jti` does not cascade to tokens already
+  exchanged from it (revoke the party by `subject` for that).
 - **The name is a placeholder** and was never confirmed.
 - **`scripts/the-algorithm-comes-from-the-key.sh` no longer measures anything
   here**, because the file it reads moved. It is removed rather than left

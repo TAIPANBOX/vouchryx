@@ -436,6 +436,20 @@ func TestARefusalDoesNotSayWhichCheckFailed(t *testing.T) {
 			return s.exchange(t, s.input(t, "user://acme/alice", map[string]any{"aud": "elsewhere"}),
 				s.input(t, "agent://acme/t", nil), s.proof(t, "o2"))
 		},
+		"stolen bound token": func() (*httptest.ResponseRecorder, map[string]any) {
+			// Bound to another key: the presenter is not the holder.
+			return s.exchange(t, s.boundInput(t, "user://acme/alice", key(t), nil),
+				s.input(t, "agent://acme/t", nil), s.proof(t, "o3"))
+		},
+		"revoked subject": func() (*httptest.ResponseRecorder, map[string]any) {
+			rs := newStand(t).realClock()
+			if w := rs.revoke(t, `{"subject":"user://acme/alice","actor":"user://acme/op","reason":"x"}`, revokeTestKey); w.Code != http.StatusOK {
+				t.Fatalf("revoke: %d", w.Code)
+			}
+			rs.now = rs.now.Add(time.Second)
+			return rs.exchange(t, rs.input(t, "user://acme/alice", map[string]any{"iat": rs.now.Unix() - 5}),
+				rs.input(t, "agent://acme/t", nil), rs.proof(t, "o4"))
+		},
 	}
 	var seen []string
 	for name, run := range cases {
@@ -898,6 +912,19 @@ func TestEveryRefusalReachesTheOperator(t *testing.T) {
 		}},
 		{"a revocation naming nobody", "revocation_names_nobody", func(s *stand) *httptest.ResponseRecorder {
 			return s.revoke(t, `{"actor":"user://acme/alice","reason":"x"}`, revokeTestKey)
+		}},
+		{"a bound token presented by somebody else", "subject_key_mismatch", func(s *stand) *httptest.ResponseRecorder {
+			w, _ := s.exchange(t, s.boundInput(t, "user://acme/alice", key(t), nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "e1"))
+			return w
+		}},
+		{"a revoked subject", "subject_revoked", func(s *stand) *httptest.ResponseRecorder {
+			s.realClock()
+			if w := s.revoke(t, `{"subject":"user://acme/alice","actor":"user://acme/op","reason":"x"}`, revokeTestKey); w.Code != http.StatusOK {
+				t.Fatalf("revoke: %d", w.Code)
+			}
+			s.now = s.now.Add(time.Second)
+			w, _ := s.exchange(t, s.input(t, "user://acme/alice", map[string]any{"iat": s.now.Unix() - 5}), s.input(t, "agent://acme/triage", nil), s.proof(t, "e2"))
+			return w
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
