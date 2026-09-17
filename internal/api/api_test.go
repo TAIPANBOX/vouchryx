@@ -359,10 +359,17 @@ func TestAnHonestProofBehindATLSTerminatorIsAccepted(t *testing.T) {
 // accept exactly this proof.
 func TestAProofMintedForTheSocketURLRatherThanTheIssuerIsRefused(t *testing.T) {
 	s := newStand(t)
+	buf := captureLog(t)
 	proof := s.proofForHTU(t, s.holder, "socket-1", "http://vouchryx.test/v1/token")
 	w, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), proof)
 	if w.Code == http.StatusOK {
 		t.Fatal("a proof minted for the raw socket URL, not the configured issuer, was accepted")
+	}
+	// Refused, but the reason has to be the destination mismatch specifically,
+	// or this test would pass just as well if the exchange were refused for
+	// any other reason, which proves nothing about the htu check.
+	if !strings.Contains(buf.String(), "bad_dpop_proof") {
+		t.Fatalf("refused, but not for the destination mismatch: %s", buf.String())
 	}
 }
 
@@ -674,6 +681,26 @@ func TestARevocationWithAConfiguredKeyIsRecorded(t *testing.T) {
 	}
 	if strings.Contains(string(raw), revokeTestKey) {
 		t.Fatalf("the raw revocation key reached the record: %s", raw)
+	}
+}
+
+// The same multiply-before-compare overflow as VOUCHRYX_TTL_SECONDS
+// (invariant 16), on expires_in_seconds instead (2026-09-17 review, second
+// pass): 20211507185753197 multiplied into a time.Duration wraps to about
+// 512ns, so the entry's Expires lands in the same second it is created. The
+// response used to still say 200 {"revoked":true}: the answer said revoked
+// and nothing was, by the time anyone could poll for it.
+func TestARevocationTTLOverflowIsRefusedRatherThanSilentlyIneffective(t *testing.T) {
+	s := newStand(t)
+	body := `{"subject":"agent://acme/triage","actor":"user://acme/alice","reason":"x","expires_in_seconds":20211507185753197}`
+	w := s.revoke(t, body, revokeTestKey)
+	if w.Code == http.StatusOK {
+		t.Fatalf("an overflowing expires_in_seconds was accepted: %d %s", w.Code, w.Body)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	if out["error"] != "invalid_request" {
+		t.Fatalf("wrong OAuth-shaped code for an overflowing ttl: %v", out)
 	}
 }
 

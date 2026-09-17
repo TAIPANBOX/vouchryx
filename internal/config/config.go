@@ -223,6 +223,13 @@ func validIssuerURL(raw string) error {
 	if u.Host == "" {
 		return errors.New("it must be an absolute http or https URL")
 	}
+	if u.User != nil {
+		// url.Parse keeps userinfo rather than refusing it, and expectedHTU
+		// would then embed it in the base every DPoP htu is checked against:
+		// no proof any real client mints would ever carry it, so every
+		// exchange would refuse at runtime instead of at startup.
+		return errors.New("it must carry no userinfo")
+	}
 	if u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("it must carry no query or fragment")
 	}

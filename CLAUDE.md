@@ -78,7 +78,10 @@ acting against anyone else.
    **One exception, and only one.** A widened scope returns `invalid_scope`
    rather than `invalid_grant` (`denyScope`, api.go), because RFC 8693 leaves
    `scope` to the authorization server and the two OAuth codes name different
-   problems; every other refusal still returns the one undifferentiated code.
+   problems; every other credential check, every `deny`, still returns
+   `invalid_grant` (the token handler's other codes, `invalid_request`,
+   `unsupported_grant_type` and `server_error`, and `/v1/revoke`'s own codes,
+   are not part of this exception because they are not credential checks).
    *(test: `TestAWidenedScopeGetsADifferentOAuthCodeThanEveryOtherRefusal`
    pins both codes in one test, so the two never drift towards each other)*
 
@@ -198,20 +201,27 @@ not a convenience.
     coincidence before the two were separated.
 
     **The 2026-09-17 review's F5 sharpens this for the EVENT half
-    specifically; the log half stays unconditional either way.** A mid-exchange
-    refusal is filed in the event stream under whichever party is already
-    established as an agent when the refusal fires: before the actor token
-    verifies that is the chain's holder, empty and so dropped on an ordinary
-    first hop, the last actor and so kept on the hand-off path; from the
-    actor's own verification onward it is the actor itself, whatever its
-    `sub` claim names. The operator's log carries every refusal either way,
-    which is the whole point of the second channel.
+    specifically; the log half stays unconditional either way.** A
+    mid-exchange refusal is filed in the event stream under whichever
+    identity is both available and agent-shaped when the refusal fires,
+    never one assumed from the shape of the request. A subject token naming
+    no `sub` at all, or one whose own `act` chain cannot be read, files
+    under nothing: the first names nobody to file under, and the second is
+    shaped like a hand-off without ever producing a holder to file under, a
+    holder can only be read FROM that chain. From there, and where the
+    chain could be read, a refusal files under the chain's holder: empty
+    and so dropped on an ordinary first hop, the last actor and so kept on
+    the hand-off path. From the actor's own verification onward it is the
+    actor's `sub`, kept when that is an agent://, dropped otherwise by the
+    same SPEC 6.1 guard: `actor_token_is_a_delegation` against an actor
+    whose own `sub` is a `user://` is filed nowhere but the log, exactly
+    like a `user://` subject ever was.
     *(gate: `scripts/every-refusal-reaches-the-operator.sh`, which DISCOVERS
     every `writeJSON` in the HTTP surface and requires every non-success one to
     sit inside `refuse`. A status held in a variable counts as not-a-success,
     because what it will be at run time cannot be read there. Three cases in
     `gates-have-teeth.sh`. Test: `TestEveryRefusalReachesTheOperator` proves
-    the log half unconditionally, three kinds, each red before the change
+    the log half unconditionally, five kinds, each red before the change
     with an empty log. Scenario: `features/delegation.feature`)*
 
 13. **A bound token is exchanged only by its holder, and the key the result is
@@ -271,7 +281,7 @@ not a convenience.
     `features/delegation.feature`)*
 
 16. **A malformed but non-empty value is not a well-formed one, at startup
-    and at the proof check.** Four narrow gaps closed by the 2026-09-17
+    and at the proof check.** Five narrow gaps closed by the 2026-09-17
     review, each one silent rather than loud:
 
     `VOUCHRYX_TTL_SECONDS` was multiplied into a `time.Duration` before the
@@ -303,16 +313,32 @@ not a convenience.
     client actually called, was refused with `bad_dpop_proof`. The expected
     `htu` (`api.expectedHTU`) is now the configured issuer, trimmed of a
     trailing slash, plus the request path; `VOUCHRYX_ISSUER` is validated as
-    an absolute `http` or `https` URL with a host and no query or fragment,
-    because it is now what a proof is checked against as well as what `iss`
-    names.
+    an absolute `http` or `https` URL with a host and no query, fragment or
+    userinfo, because it is now what a proof is checked against as well as
+    what `iss` names (userinfo added in a second pass: `url.Parse` keeps it
+    rather than refusing it, and no real client's proof would ever carry it
+    in a `htu`, so it would refuse every exchange at run time instead of
+    refusing once at startup).
+
+    A fifth gap, found in a second pass: `POST /v1/revoke`'s own
+    `expires_in_seconds` had the identical multiply-before-compare shape,
+    separately, in `revokeHandler`. `expires_in_seconds=20211507185753197`
+    multiplied into a `time.Duration` wraps to about 512ns, which is neither
+    `<= 0` nor `> MaxTTL`, so the entry's `Expires` landed in the same second
+    it was created while the response still said `200 {"revoked":true}`: the
+    answer said revoked and nothing was, by the time anyone could poll for
+    it. Compared BEFORE the multiplication now, the same shape as the TTL
+    fix above; unset (`0`) still defaults to `MaxTTL`, unchanged.
     *(tests: `TestATTLThatOverflowsTimeDurationIsRefusedByTheCapBeforeWrapping`,
     `TestATrustedKeyWithNoKtyIsRefused`, `TestASigningKeyNotOnP256IsRefused`,
     `TestAnIssuerThatIsNotAnAbsoluteURLIsRefused` (`internal/config`),
     `TestAnHonestProofBehindATLSTerminatorIsAccepted`,
     `TestAProofMintedForTheSocketURLRatherThanTheIssuerIsRefused`,
-    `TestATrailingSlashOnTheIssuerStillYieldsTheSameExpectedHtu`
+    `TestATrailingSlashOnTheIssuerStillYieldsTheSameExpectedHtu`,
+    `TestARevocationTTLOverflowIsRefusedRatherThanSilentlyIneffective`
     (`internal/api`); mutants: the TTL comparison moved back above the
-    multiplication, the `Kty` check dropped, the curve check dropped, the
+    multiplication (both the config and the revoke-handler copy), the `Kty`
+    check dropped, the curve check dropped, the userinfo check dropped, the
+    fragment half of the query-or-fragment check dropped on its own, the
     `htu` builder reverted to `r.Host`/`r.TLS`, each caught. Scenarios:
     `features/delegation.feature`)*

@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-83-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-84-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -271,7 +271,7 @@ pick one.
 
 ## Testing
 
-71 tests. Tier T3: these are authorization decisions where a wrong answer is
+72 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;
@@ -322,8 +322,9 @@ Stated here rather than left to be discovered.
   bind is routable; terminating TLS is the deployment's job and is not
   demonstrated here. The DPoP `htu` it checks is built from `VOUCHRYX_ISSUER`,
   not from the request's own socket, so a terminator rewriting the scheme and
-  host in front of it is accounted for even though this service does not
-  terminate TLS itself.
+  host in front of it does not by itself break the check; this is measured
+  only through `httptest` requests carrying a literal URL, never through a
+  real reverse proxy or TLS terminator.
 - **The hand-off has not been run against a real IdP's bound tokens**, only
   against credentials the tests bind the same way; and there is no lineage in
   a token, so revoking a parent by `jti` does not cascade to tokens already

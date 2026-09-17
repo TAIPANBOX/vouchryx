@@ -433,10 +433,10 @@ func TestASigningKeyNotOnP256IsRefused(t *testing.T) {
 // The htu fix (2026-09-17 review): VOUCHRYX_ISSUER is now also the base every
 // DPoP htu is checked against (api.expectedHTU), so it must be well-formed
 // enough to build one from: an absolute http or https URL with a host and no
-// query or fragment.
+// userinfo, query or fragment.
 func TestAnIssuerThatIsNotAnAbsoluteURLIsRefused(t *testing.T) {
 	key, jwks := ecKeyFile(t), jwksFile(t, "idp-1")
-	for _, bad := range []string{"vouchryx", "https://", "https://x/?q=1", "ftp://x"} {
+	for _, bad := range []string{"vouchryx", "https://", "https://x/?q=1", "https://x/#f", "https://u:p@x", "ftp://x"} {
 		withEnv(t, map[string]string{
 			"VOUCHRYX_ISSUER":          bad,
 			"VOUCHRYX_SIGNING_KEY":     key,

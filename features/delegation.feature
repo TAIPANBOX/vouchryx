@@ -339,3 +339,27 @@ Feature: A delegation that can be proved, and ended
     When the exchange is made
     Then it is refused, because the binding is to the issuer and a proof for
       the wrong destination is not decoration
+
+  # @test:TestATrailingSlashOnTheIssuerStillYieldsTheSameExpectedHtu
+  Scenario: A trailing slash on the issuer still yields the same expected htu
+    Given VOUCHRYX_ISSUER configured with a trailing slash
+    And a proof minted for the issuer without one
+    When the exchange is made
+    Then it is accepted, because the trailing slash is trimmed before the
+      request path is appended
+
+  # @test:TestAWidenedScopeGetsADifferentOAuthCodeThanEveryOtherRefusal
+  Scenario: A widened scope gets a different OAuth code from every other refusal
+    Given a widened scope and, separately, a credential refusal of another kind
+    When each is refused
+    Then the widened scope gets invalid_scope and the other refusal gets
+      invalid_grant, because RFC 8693 leaves scope to the authorization
+      server and the two codes name different problems
+
+  # @test:TestARevocationTTLOverflowIsRefusedRatherThanSilentlyIneffective
+  Scenario: A revocation whose expires_in_seconds would overflow is refused
+    Given a revocation carrying an expires_in_seconds so large that
+      multiplying it into a duration wraps negative
+    When it is submitted
+    Then it is refused, because a revocation the response calls successful
+      must not be one that expires before anyone can poll for it
