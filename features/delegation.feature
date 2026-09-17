@@ -288,3 +288,78 @@ Feature: A delegation that can be proved, and ended
     When each is handed on
     Then every one below the cap is issued bound to the delegate's key with the chain intact
     And the one at the cap is refused
+
+  # ---------------------------------------------------------------------
+  # The 2026-09-17 review's LOW findings, @decided 2026-09-17: closed as measured.
+  # ---------------------------------------------------------------------
+
+  # @test:TestATTLThatOverflowsTimeDurationIsRefusedByTheCapBeforeWrapping
+  Scenario: A TTL past the cap is refused however it overflows
+    Given VOUCHRYX_TTL_SECONDS set past the point where multiplying it into a
+      duration wraps negative
+    When the process starts
+    Then it refuses and names the cap, because a wrapped negative TTL is not
+      a shorter one
+
+  # @test:TestATrustedKeyWithNoKtyIsRefused
+  Scenario: A trusted key with no type is refused at startup
+    Given a trusted JWKS entry carrying a kid but no kty
+    When the process starts
+    Then it refuses and names the kid, because a key with no type verifies
+      nothing
+
+  # @test:TestASigningKeyNotOnP256IsRefused
+  Scenario: A signing key on the wrong curve is refused at startup
+    Given a signing key generated on P-384 or P-521, in either PEM form
+    When the process starts
+    Then it refuses and names the curve, because this service issues ES256,
+      which is P-256
+
+  # @test:TestAnIssuerThatIsNotAnAbsoluteURLIsRefused
+  Scenario: An issuer that is not an absolute URL is refused
+    Given VOUCHRYX_ISSUER set to a bare word, a scheme with no host, a URL
+      carrying a query, or a scheme this service does not serve
+    When the process starts
+    Then it refuses and names the variable, because the issuer is now also
+      the base every DPoP htu is checked against
+
+  # @test:TestAnHonestProofBehindATLSTerminatorIsAccepted
+  Scenario: An honest proof behind a TLS terminator is accepted
+    Given a proof minted for the configured issuer's own URL
+    And a request that reaches this service as plain http on an internal
+      host, the shape a terminator or reverse proxy produces
+    When the exchange is made
+    Then it is accepted, because the htu it checks is the configured issuer,
+      not the request's own socket
+
+  # @test:TestAProofMintedForTheSocketURLRatherThanTheIssuerIsRefused
+  Scenario: A proof minted for the socket URL rather than the issuer is refused
+    Given a proof minted for the request's own socket URL, not the configured
+      issuer
+    When the exchange is made
+    Then it is refused, because the binding is to the issuer and a proof for
+      the wrong destination is not decoration
+
+  # @test:TestATrailingSlashOnTheIssuerStillYieldsTheSameExpectedHtu
+  Scenario: A trailing slash on the issuer still yields the same expected htu
+    Given VOUCHRYX_ISSUER configured with a trailing slash
+    And a proof minted for the issuer without one
+    When the exchange is made
+    Then it is accepted, because the trailing slash is trimmed before the
+      request path is appended
+
+  # @test:TestAWidenedScopeGetsADifferentOAuthCodeThanEveryOtherRefusal
+  Scenario: A widened scope gets a different OAuth code from every other refusal
+    Given a widened scope and, separately, a credential refusal of another kind
+    When each is refused
+    Then the widened scope gets invalid_scope and the other refusal gets
+      invalid_grant, because RFC 8693 leaves scope to the authorization
+      server and the two codes name different problems
+
+  # @test:TestARevocationTTLOverflowIsRefusedRatherThanSilentlyIneffective
+  Scenario: A revocation whose expires_in_seconds would overflow is refused
+    Given a revocation carrying an expires_in_seconds so large that
+      multiplying it into a duration wraps negative
+    When it is submitted
+    Then it is refused, because a revocation the response calls successful
+      must not be one that expires before anyone can poll for it

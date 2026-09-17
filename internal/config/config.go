@@ -8,11 +8,13 @@ package config
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -95,17 +97,28 @@ func FromEnv() (Config, error) {
 	if c.Issuer == "" {
 		return c, errors.New("VOUCHRYX_ISSUER is required: it is the `iss` this service puts on every token it mints")
 	}
+	if err := validIssuerURL(c.Issuer); err != nil {
+		return c, fmt.Errorf("VOUCHRYX_ISSUER is %q: %w", c.Issuer, err)
+	}
 	if raw := os.Getenv("VOUCHRYX_TTL_SECONDS"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n <= 0 {
 			return c, fmt.Errorf("VOUCHRYX_TTL_SECONDS is %q; it must be a positive number of seconds", raw)
 		}
-		c.TTL = time.Duration(n) * time.Second
-		if c.TTL > MaxTTL {
+		// Compared BEFORE the multiplication, not after: n * time.Second
+		// overflows time.Duration (an int64 count of nanoseconds) for any n
+		// past roughly 9.2e9, and it overflows silently, wrapping negative.
+		// A cap check that ran after the multiplication (found by the
+		// 2026-09-17 review) compared a wrapped-negative duration against
+		// MaxTTL and let it through: VOUCHRYX_TTL_SECONDS=9223372037 started
+		// a service with an effective TTL of about -2562047h, every token
+		// already expired the instant it was issued.
+		if n > int(MaxTTL/time.Second) {
 			return c, fmt.Errorf(
 				"VOUCHRYX_TTL_SECONDS is %d, longer than the %v cap: a long-lived "+
 					"delegation token is what this service exists to avoid", n, MaxTTL)
 		}
+		c.TTL = time.Duration(n) * time.Second
 	}
 
 	path := os.Getenv("VOUCHRYX_SIGNING_KEY")
@@ -159,21 +172,68 @@ func loadKey(path string) (*ecdsa.PrivateKey, error) {
 	if block == nil {
 		return nil, fmt.Errorf("the file at %s is not PEM", path)
 	}
-	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
-		return key, nil
+	var key *ecdsa.PrivateKey
+	if k, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+		key = k
+	} else {
+		any, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("the key at %s is not an EC private key", path)
+		}
+		k, ok := any.(*ecdsa.PrivateKey)
+		if !ok {
+			// RSA would work for signing and is refused anyway: this service issues
+			// ES256 only, and a config that silently accepted an RSA key would
+			// produce a service that could not sign with the key it was given.
+			return nil, fmt.Errorf("the key at %s is not an EC key; this service issues ES256", path)
+		}
+		key = k
 	}
-	any, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("the key at %s is not an EC private key", path)
-	}
-	key, ok := any.(*ecdsa.PrivateKey)
-	if !ok {
-		// RSA would work for signing and is refused anyway: this service issues
-		// ES256 only, and a config that silently accepted an RSA key would
-		// produce a service that could not sign with the key it was given.
-		return nil, fmt.Errorf("the key at %s is not an EC key; this service issues ES256", path)
+	if key.Curve != elliptic.P256() {
+		// This service issues ES256, which is P-256: loadKey accepted any EC
+		// curve, so a P-384 or P-521 signing key started a service that says
+		// ES256 while its published JWKS carries crv=P-384 or crv=P-521
+		// (found by the 2026-09-17 review). SignES256 refusing a mismatched
+		// key is agent-stack-go's own fix, in the library; this repository
+		// refuses at STARTUP under invariant 8 regardless of which library
+		// version it pins.
+		return nil, fmt.Errorf("the key at %s is a %s key; this service issues ES256, which is P-256",
+			path, key.Curve.Params().Name)
 	}
 	return key, nil
+}
+
+// validIssuerURL requires VOUCHRYX_ISSUER to be an absolute http or https URL
+// with a host and no query or fragment.
+//
+// It is the `iss` this service puts on every token AND, since the
+// 2026-09-17 review, the base every DPoP `htu` is checked against
+// (api.expectedHTU): behind a TLS terminator or any reverse proxy this is
+// the public URL the client actually called, not the socket this process
+// happens to be listening on, so it must be well-formed enough to build a
+// `htu` from.
+func validIssuerURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("not a URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("it must be an absolute http or https URL")
+	}
+	if u.Host == "" {
+		return errors.New("it must be an absolute http or https URL")
+	}
+	if u.User != nil {
+		// url.Parse keeps userinfo rather than refusing it, and expectedHTU
+		// would then embed it in the base every DPoP htu is checked against:
+		// no proof any real client mints would ever carry it, so every
+		// exchange would refuse at runtime instead of at startup.
+		return errors.New("it must carry no userinfo")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("it must carry no query or fragment")
+	}
+	return nil
 }
 
 // loadTrusted parses `iss=aud=<jwks-file>` entries, one per line.
@@ -200,6 +260,18 @@ func loadTrusted(spec string) ([]Issuer, error) {
 			return nil, fmt.Errorf("the JWKS for %s at %s has no keys", parts[0], parts[2])
 		}
 		for _, k := range set.Keys {
+			if k.Kty == "" {
+				// A key with no type cannot be matched to an algorithm: this
+				// service's allowlist is keyed by TYPE, never by the token
+				// header (invariant 1), and an empty Kty has no type to key
+				// on. An off-curve point or a bad coordinate is refused later,
+				// at verification time, by the library this service calls
+				// (fail closed); a full key validator here would be an
+				// agent-stack-go surface addition and is out of this batch.
+				return nil, fmt.Errorf(
+					"a key in the JWKS for %s (kid %q) has no kty; a key with no type "+
+						"verifies nothing", parts[0], k.Kid)
+			}
 			if k.Kid == "" {
 				return nil, fmt.Errorf(
 					"a key in the JWKS for %s has no kid; this service matches by kid and "+

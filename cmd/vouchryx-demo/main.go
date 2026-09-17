@@ -112,7 +112,8 @@ func keygen(args []string) error {
 
 func exchange(args []string) error {
 	fs := flag.NewFlagSet("exchange", flag.ContinueOnError)
-	url := fs.String("url", "", "the vouchryx origin, e.g. http://127.0.0.1:4310")
+	url := fs.String("url", "", "the vouchryx origin, e.g. http://127.0.0.1:4310; "+
+		"must equal VOUCHRYX_ISSUER, the base the service checks the proof's htu against")
 	idpKey := fs.String("idp-key", "", "PEM EC private key of the issuer this service trusts")
 	kid := fs.String("kid", "", "the kid naming that key in the trusted JWKS")
 	iss := fs.String("iss", "", "the issuer's `iss`, matching VOUCHRYX_TRUSTED_ISSUERS")

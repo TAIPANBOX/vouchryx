@@ -171,7 +171,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		deny("", "no_dpop_proof", nil)
 		return
 	}
-	thumb, err := s.Proofs.Check(proof, r.Method, absoluteURL(r), s.now())
+	thumb, err := s.Proofs.Check(proof, r.Method, s.expectedHTU(r), s.now())
 	if err != nil {
 		deny("", "bad_dpop_proof", map[string]any{"detail": err.Error()})
 		return
@@ -499,8 +499,20 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.now()
+	// Compared BEFORE the multiplication, not after: the same overflow
+	// invariant 16 closed on VOUCHRYX_TTL_SECONDS, on expires_in_seconds
+	// instead (2026-09-17 review, second pass). 20211507185753197
+	// multiplied into a time.Duration wraps to about 512ns, which is
+	// neither <= 0 nor > MaxTTL, so an entry that expires in the same
+	// second it is created used to pass with a 200 {"revoked":true}: the
+	// answer said revoked and nothing was, by the time anyone could poll
+	// for it.
+	if body.ExpiresInSec > int(config.MaxTTL/time.Second) {
+		refuse(w, http.StatusBadRequest, "invalid_request", "revocation_ttl_too_long", map[string]any{"expires_in_seconds": body.ExpiresInSec})
+		return
+	}
 	ttl := time.Duration(body.ExpiresInSec) * time.Second
-	if ttl <= 0 || ttl > config.MaxTTL {
+	if ttl <= 0 {
 		// An entry only has to outlive the longest token it could match.
 		ttl = config.MaxTTL
 	}
@@ -702,12 +714,27 @@ func asUnix(v any) (int64, bool) {
 	return int64(f), true
 }
 
-func absoluteURL(r *http.Request) string {
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	return scheme + "://" + r.Host + r.URL.Path
+// expectedHTU is the `htu` (RFC 9449 section 4.2) a DPoP proof on this
+// request must carry: the configured issuer, not the socket this process
+// happens to be listening on.
+//
+// Behind a TLS terminator or any reverse proxy this service sees http and an
+// internal host, so building the expected htu from r.TLS and r.Host (as this
+// used to) refused every honest proof, minted for the public URL the client
+// actually called, with bad_dpop_proof (found by the 2026-09-17 review).
+// VOUCHRYX_ISSUER is already this service's public identity, and
+// config.FromEnv now requires it to parse as an absolute URL for exactly this
+// use, so it is the base here instead.
+//
+// r.URL.Path, not r.URL.EscapedPath(): fine only because this service's
+// routes are all literal (Routes, above), so Go 1.27's mux has already
+// decoded and normalised the request onto one of those exact strings before
+// this ever runs (a request for /v1/%74oken is served as /v1/token, and
+// /v1%2Ftoken 404s rather than reaching a handler at all). A future route
+// with a path parameter would not get that for free and must not inherit
+// this choice without checking it.
+func (s *Server) expectedHTU(r *http.Request) string {
+	return strings.TrimRight(s.Cfg.Issuer, "/") + r.URL.Path
 }
 
 func audienceMatches(aud any, want string) bool {

@@ -75,6 +75,16 @@ acting against anyone else.
    *(test: `TestARefusalDoesNotSayWhichCheckFailed` for the first half,
    `TestARefusalAfterTheSubjectIsKnownReachesTheRecord` for the second)*
 
+   **One exception, and only one.** A widened scope returns `invalid_scope`
+   rather than `invalid_grant` (`denyScope`, api.go), because RFC 8693 leaves
+   `scope` to the authorization server and the two OAuth codes name different
+   problems; every other credential check, every `deny`, still returns
+   `invalid_grant` (the token handler's other codes, `invalid_request`,
+   `unsupported_grant_type` and `server_error`, and `/v1/revoke`'s own codes,
+   are not part of this exception because they are not credential checks).
+   *(test: `TestAWidenedScopeGetsADifferentOAuthCodeThanEveryOtherRefusal`
+   pins both codes in one test, so the two never drift towards each other)*
+
 6. **A revocation carries an actor and a reason.** One with neither is an outage
    somebody has to reconstruct from timing. *(test:
    `TestARevocationWithNoActorOrNoReasonIsRefused`)*
@@ -189,13 +199,32 @@ not a convenience.
     is both a legitimate RFC 6749 code and a plausible reason string, and the
     test that asserts the reason never reaches the caller tripped on that
     coincidence before the two were separated.
+
+    **The 2026-09-17 review's F5 sharpens this for the EVENT half
+    specifically; the log half stays unconditional either way.** A
+    mid-exchange `deny` is filed in the event stream under whichever
+    identity is both available and agent-shaped when the refusal fires,
+    never one assumed from the shape of the request. A subject token naming
+    no `sub` at all, or one whose own `act` chain cannot be read, files
+    under nothing: the first names nobody to file under, and the second is
+    shaped like a hand-off without ever producing a holder to file under, a
+    holder can only be read FROM that chain. From there, and where the
+    chain could be read, a refusal files under the chain's holder: empty
+    and so dropped on an ordinary first hop, the last actor on the hand-off
+    path, kept when that is agent-shaped (the chain accepts `user://`
+    entries and the guard is lowercase-only). From the actor's `sub` being
+    read onward it is the actor's `sub`, kept when that is an agent://,
+    dropped otherwise by the same SPEC 6.1 guard: `actor_token_is_a_delegation` against an actor
+    whose own `sub` is a `user://` is filed nowhere but the log, exactly
+    like a `user://` subject ever was.
     *(gate: `scripts/every-refusal-reaches-the-operator.sh`, which DISCOVERS
     every `writeJSON` in the HTTP surface and requires every non-success one to
     sit inside `refuse`. A status held in a variable counts as not-a-success,
     because what it will be at run time cannot be read there. Three cases in
-    `gates-have-teeth.sh`. Test: `TestEveryRefusalReachesTheOperator`, three
-    kinds, each red before the change with an empty log. Scenario:
-    `features/delegation.feature`)*
+    `gates-have-teeth.sh`. Test: `TestEveryRefusalReachesTheOperator` proves
+    the log half unconditionally, five kinds, the first three each red
+    before the change with an empty log and the two from #27 red because
+    the exchange still answered 200. Scenario: `features/delegation.feature`)*
 
 13. **A bound token is exchanged only by its holder, and the key the result is
     bound to is never the presenter's choice.** `@decided 2026-09-17`: this
@@ -251,4 +280,67 @@ not a convenience.
     a consumer reads absence as.
     *(test: `TestAnExchangeWithoutAScopeRequestInheritsTheSubjectsScope`, red
     first; mutant: inheritance dropped, caught. Scenario:
+    `features/delegation.feature`)*
+
+16. **A malformed but non-empty value is not a well-formed one, at startup
+    and at the proof check.** Five narrow gaps closed by the 2026-09-17
+    review, each one silent rather than loud:
+
+    `VOUCHRYX_TTL_SECONDS` was multiplied into a `time.Duration` before the
+    cap comparison, so a value past roughly 9.2e9 wrapped negative in that
+    multiplication and passed the cap check that ran after it:
+    `VOUCHRYX_TTL_SECONDS=9223372037` started a service with an effective
+    TTL of about `-2562047h`, every token already expired the instant it was
+    issued. The comparison now runs on the unmultiplied seconds.
+
+    A trusted JWKS entry with a `kid` but no `kty` passed `loadTrusted`
+    because only non-emptiness and `kid` were checked, so the service
+    started trusting a key that verifies nothing. `loadTrusted` now refuses a
+    key with an empty `Kty`, naming the issuer and the kid; an off-curve
+    point or a bad coordinate is still left to the library's own refusal at
+    verification time, fail closed, on purpose (a full key validator here
+    would be an `agent-stack-go` surface addition).
+
+    `loadKey` accepted any EC curve, so a P-384 or P-521 signing key started
+    a service that says ES256 while its published JWKS carries a
+    disagreeing `crv`. `SignES256` refusing a mismatched key is
+    `agent-stack-go`'s own fix, in the library; this repository refuses at
+    STARTUP under this invariant regardless of which library version it
+    pins, naming the curve found, for both PEM forms this service reads.
+
+    The DPoP `htu` a proof is checked against was built from `r.Host` and
+    `r.TLS`, the request's own socket, rather than from `VOUCHRYX_ISSUER`, so
+    behind a TLS terminator or any reverse proxy this service saw `http` and
+    an internal host, and an honest proof, minted for the public URL the
+    client actually called, was refused with `bad_dpop_proof`. The expected
+    `htu` (`api.expectedHTU`) is now the configured issuer, trimmed of a
+    trailing slash, plus the request path; `VOUCHRYX_ISSUER` is validated as
+    an absolute `http` or `https` URL with a host and no query, fragment or
+    userinfo, because it is now what a proof is checked against as well as
+    what `iss` names (userinfo added in a second pass: `url.Parse` keeps it
+    rather than refusing it, and no real client's proof would ever carry it
+    in a `htu`, so it would refuse every exchange at run time instead of
+    refusing once at startup).
+
+    A fifth gap, found in a second pass: `POST /v1/revoke`'s own
+    `expires_in_seconds` had the identical multiply-before-compare shape,
+    separately, in `revokeHandler`. `expires_in_seconds=20211507185753197`
+    multiplied into a `time.Duration` wraps to about 512ns, which is neither
+    `<= 0` nor `> MaxTTL`, so the entry's `Expires` landed in the same second
+    it was created while the response still said `200 {"revoked":true}`: the
+    answer said revoked and nothing was, by the time anyone could poll for
+    it. Compared BEFORE the multiplication now, the same shape as the TTL
+    fix above; unset (`0`) still defaults to `MaxTTL`, unchanged.
+    *(tests: `TestATTLThatOverflowsTimeDurationIsRefusedByTheCapBeforeWrapping`,
+    `TestATrustedKeyWithNoKtyIsRefused`, `TestASigningKeyNotOnP256IsRefused`,
+    `TestAnIssuerThatIsNotAnAbsoluteURLIsRefused` (`internal/config`),
+    `TestAnHonestProofBehindATLSTerminatorIsAccepted`,
+    `TestAProofMintedForTheSocketURLRatherThanTheIssuerIsRefused`,
+    `TestATrailingSlashOnTheIssuerStillYieldsTheSameExpectedHtu`,
+    `TestARevocationTTLOverflowIsRefusedRatherThanSilentlyIneffective`
+    (`internal/api`); mutants: the TTL comparison moved back above the
+    multiplication (both the config and the revoke-handler copy), the `Kty`
+    check dropped, the curve check dropped, the userinfo check dropped, the
+    fragment half of the query-or-fragment check dropped on its own, the
+    `htu` builder reverted to `r.Host`/`r.TLS`, each caught. Scenarios:
     `features/delegation.feature`)*

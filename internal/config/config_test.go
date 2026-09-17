@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Every test here is about who this service will BELIEVE, which is the only
@@ -303,6 +304,166 @@ func mustFail(t *testing.T) error {
 // This asserts against the estate's OWN map rather than a number I like:
 // tokenfuse 4100/4200/5000, scopyx 4300, wardryx 4318/8090/9999,
 // trailryx 4318, idryx 8080, genaryx 7420. Measured 2026-08-26.
+// F8 (2026-09-17 review): n was multiplied into time.Duration BEFORE the
+// MaxTTL comparison, so a large enough VOUCHRYX_TTL_SECONDS wrapped negative
+// in the multiplication and passed the cap check that ran after it: an
+// operator setting 9223372037 got a service issuing already-expired tokens,
+// not a refusal.
+func TestATTLThatOverflowsTimeDurationIsRefusedByTheCapBeforeWrapping(t *testing.T) {
+	key, jwks := ecKeyFile(t), jwksFile(t, "idp-1")
+	for _, raw := range []string{"9223372037", "9223372036854775807", "3601"} {
+		withEnv(t, map[string]string{
+			"VOUCHRYX_ISSUER":          "https://v.example",
+			"VOUCHRYX_SIGNING_KEY":     key,
+			"VOUCHRYX_TRUSTED_ISSUERS": "https://idp.example|aud|" + jwks,
+			"VOUCHRYX_TTL_SECONDS":     raw,
+		}, func() {
+			c, err := FromEnv()
+			if err == nil {
+				t.Fatalf("TTL %q was accepted, effective TTL %v", raw, c.TTL)
+			}
+			if !strings.Contains(err.Error(), "cap") {
+				t.Fatalf("the error does not name the cap: %v", err)
+			}
+		})
+	}
+	for raw, want := range map[string]time.Duration{"3600": time.Hour, "1": time.Second} {
+		withEnv(t, map[string]string{
+			"VOUCHRYX_ISSUER":          "https://v.example",
+			"VOUCHRYX_SIGNING_KEY":     key,
+			"VOUCHRYX_TRUSTED_ISSUERS": "https://idp.example|aud|" + jwks,
+			"VOUCHRYX_TTL_SECONDS":     raw,
+		}, func() {
+			c, err := FromEnv()
+			if err != nil {
+				t.Fatalf("TTL %q was refused: %v", raw, err)
+			}
+			if c.TTL != want {
+				t.Fatalf("TTL %q: got %v, want %v", raw, c.TTL, want)
+			}
+		})
+	}
+}
+
+// F8 (2026-09-17 review): a JWKS entry with a kid but no kty passed
+// loadTrusted because only non-emptiness and kid were checked, so the
+// service started trusting a key that verifies nothing.
+func TestATrustedKeyWithNoKtyIsRefused(t *testing.T) {
+	key := ecKeyFile(t)
+	bad := write(t, "nokty.json", `{"keys":[{"kid":"idp-1"}]}`)
+	withEnv(t, map[string]string{
+		"VOUCHRYX_ISSUER":          "https://v.example",
+		"VOUCHRYX_SIGNING_KEY":     key,
+		"VOUCHRYX_TRUSTED_ISSUERS": "https://idp.example|aud|" + bad,
+	}, func() {
+		_, err := FromEnv()
+		if err == nil {
+			t.Fatal("a JWKS entry with no kty was accepted")
+		}
+		if !strings.Contains(err.Error(), "kty") || !strings.Contains(err.Error(), "idp-1") {
+			t.Fatalf("the error does not name kty and the kid: %v", err)
+		}
+	})
+	// The existing good JWKS still loads.
+	withEnv(t, map[string]string{
+		"VOUCHRYX_ISSUER":          "https://v.example",
+		"VOUCHRYX_SIGNING_KEY":     key,
+		"VOUCHRYX_TRUSTED_ISSUERS": "https://idp.example|aud|" + jwksFile(t, "idp-1"),
+	}, func() {
+		if _, err := FromEnv(); err != nil {
+			t.Fatalf("a well-formed JWKS was refused: %v", err)
+		}
+	})
+}
+
+// F7's startup half (2026-09-17 review): loadKey accepted any EC curve, so a
+// P-384 or P-521 signing key started a service that says ES256 and publishes
+// a JWKS whose crv and alg disagree. The library half (SignES256 refusing
+// the key) is agent-stack-go's own fix; this repository refuses at startup
+// regardless of which library version it pins.
+func TestASigningKeyNotOnP256IsRefused(t *testing.T) {
+	jwks := jwksFile(t, "idp-1")
+	for _, curve := range []elliptic.Curve{elliptic.P384(), elliptic.P521()} {
+		k, err := ecdsa.GenerateKey(curve, rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secDER, err := x509.MarshalECPrivateKey(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pkcs8DER, err := x509.MarshalPKCS8PrivateKey(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := curve.Params().Name
+		forms := map[string]*pem.Block{
+			"sec1":  {Type: "EC PRIVATE KEY", Bytes: secDER},
+			"pkcs8": {Type: "PRIVATE KEY", Bytes: pkcs8DER},
+		}
+		for form, block := range forms {
+			path := write(t, name+"-"+form+".pem", string(pem.EncodeToMemory(block)))
+			withEnv(t, map[string]string{
+				"VOUCHRYX_ISSUER":          "https://v.example",
+				"VOUCHRYX_SIGNING_KEY":     path,
+				"VOUCHRYX_TRUSTED_ISSUERS": "https://idp.example|aud|" + jwks,
+			}, func() {
+				_, err := FromEnv()
+				if err == nil {
+					t.Fatalf("%s (%s): a %s signing key was accepted", name, form, name)
+				}
+				if !strings.Contains(err.Error(), name) {
+					t.Fatalf("%s (%s): the error does not name the curve: %v", name, form, err)
+				}
+			})
+		}
+	}
+	// The existing P-256 fixture still comes up.
+	withEnv(t, map[string]string{
+		"VOUCHRYX_ISSUER":          "https://v.example",
+		"VOUCHRYX_SIGNING_KEY":     ecKeyFile(t),
+		"VOUCHRYX_TRUSTED_ISSUERS": "https://idp.example|aud|" + jwks,
+	}, func() {
+		if _, err := FromEnv(); err != nil {
+			t.Fatalf("a P-256 signing key was refused: %v", err)
+		}
+	})
+}
+
+// The htu fix (2026-09-17 review): VOUCHRYX_ISSUER is now also the base every
+// DPoP htu is checked against (api.expectedHTU), so it must be well-formed
+// enough to build one from: an absolute http or https URL with a host and no
+// userinfo, query or fragment.
+func TestAnIssuerThatIsNotAnAbsoluteURLIsRefused(t *testing.T) {
+	key, jwks := ecKeyFile(t), jwksFile(t, "idp-1")
+	for _, bad := range []string{"vouchryx", "https://", "https://x/?q=1", "https://x/#f", "https://u:p@x", "ftp://x"} {
+		withEnv(t, map[string]string{
+			"VOUCHRYX_ISSUER":          bad,
+			"VOUCHRYX_SIGNING_KEY":     key,
+			"VOUCHRYX_TRUSTED_ISSUERS": "https://idp.example|aud|" + jwks,
+		}, func() {
+			_, err := FromEnv()
+			if err == nil {
+				t.Fatalf("issuer %q was accepted", bad)
+			}
+			if !strings.Contains(err.Error(), "VOUCHRYX_ISSUER") {
+				t.Fatalf("the error does not name VOUCHRYX_ISSUER: %v", err)
+			}
+		})
+	}
+	for _, good := range []string{"https://vouchryx.acme.example", "http://127.0.0.1:4310"} {
+		withEnv(t, map[string]string{
+			"VOUCHRYX_ISSUER":          good,
+			"VOUCHRYX_SIGNING_KEY":     key,
+			"VOUCHRYX_TRUSTED_ISSUERS": "https://idp.example|aud|" + jwks,
+		}, func() {
+			if _, err := FromEnv(); err != nil {
+				t.Fatalf("issuer %q was refused: %v", good, err)
+			}
+		})
+	}
+}
+
 func TestTheDefaultPortIsNotOneAnotherServiceAnswersOn(t *testing.T) {
 	taken := map[string]string{
 		"4100": "tokenfuse", "4200": "tokenfuse", "5000": "tokenfuse",
