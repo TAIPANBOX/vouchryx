@@ -74,8 +74,21 @@ fault "readme numbers: the stated count drifts from the suite" \
 # the badge is checked, this one proves the prose is too. README.md:247 said
 # "63 tests." after the suite had shrunk to 41 top-level functions, and the
 # badge-only check above would still pass on that fault.
+#
+# The anchor is READ from README.md rather than pinned as a literal here,
+# because the number in it is exactly what this repository's own tests keep
+# changing: a literal goes stale on the next legitimate count, which is what
+# happened to "63 tests. Tier T3:" the day this line was "71 tests. Tier T3:"
+# and the case aborted the whole script instead of running it. If the line is
+# gone or reshaped, that is this case's own subject missing, so it says so and
+# stops rather than passing on nothing.
+prose_anchor=$(grep -oE '^[0-9]+ tests\. Tier T3:' README.md | head -1 || true)
+[ -n "$prose_anchor" ] || {
+  echo "UNJUDGEABLE: readme numbers: no '<N> tests. Tier T3:' line in README.md; this case measured nothing" >&2
+  exit 1
+}
 fault "readme numbers: the prose test count drifts from the suite" \
-  README.md '63 tests. Tier T3:' '999 tests. Tier T3:' \
+  README.md "$prose_anchor" '999 tests. Tier T3:' \
   fail ./scripts/readme-numbers.sh
 
 fault "refusals: one routed around the funnel, so nobody outside sees it" \
