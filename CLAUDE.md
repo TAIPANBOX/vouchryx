@@ -75,6 +75,13 @@ acting against anyone else.
    *(test: `TestARefusalDoesNotSayWhichCheckFailed` for the first half,
    `TestARefusalAfterTheSubjectIsKnownReachesTheRecord` for the second)*
 
+   **One exception, and only one.** A widened scope returns `invalid_scope`
+   rather than `invalid_grant` (`denyScope`, api.go), because RFC 8693 leaves
+   `scope` to the authorization server and the two OAuth codes name different
+   problems; every other refusal still returns the one undifferentiated code.
+   *(test: `TestAWidenedScopeGetsADifferentOAuthCodeThanEveryOtherRefusal`
+   pins both codes in one test, so the two never drift towards each other)*
+
 6. **A revocation carries an actor and a reason.** One with neither is an outage
    somebody has to reconstruct from timing. *(test:
    `TestARevocationWithNoActorOrNoReasonIsRefused`)*
@@ -189,13 +196,23 @@ not a convenience.
     is both a legitimate RFC 6749 code and a plausible reason string, and the
     test that asserts the reason never reaches the caller tripped on that
     coincidence before the two were separated.
+
+    **The 2026-09-17 review's F5 sharpens this for the EVENT half
+    specifically; the log half stays unconditional either way.** A mid-exchange
+    refusal is filed in the event stream under whichever party is already
+    established as an agent when the refusal fires: before the actor token
+    verifies that is the chain's holder, empty and so dropped on an ordinary
+    first hop, the last actor and so kept on the hand-off path; from the
+    actor's own verification onward it is the actor itself, whatever its
+    `sub` claim names. The operator's log carries every refusal either way,
+    which is the whole point of the second channel.
     *(gate: `scripts/every-refusal-reaches-the-operator.sh`, which DISCOVERS
     every `writeJSON` in the HTTP surface and requires every non-success one to
     sit inside `refuse`. A status held in a variable counts as not-a-success,
     because what it will be at run time cannot be read there. Three cases in
-    `gates-have-teeth.sh`. Test: `TestEveryRefusalReachesTheOperator`, three
-    kinds, each red before the change with an empty log. Scenario:
-    `features/delegation.feature`)*
+    `gates-have-teeth.sh`. Test: `TestEveryRefusalReachesTheOperator` proves
+    the log half unconditionally, three kinds, each red before the change
+    with an empty log. Scenario: `features/delegation.feature`)*
 
 13. **A bound token is exchanged only by its holder, and the key the result is
     bound to is never the presenter's choice.** `@decided 2026-09-17`: this
@@ -251,4 +268,51 @@ not a convenience.
     a consumer reads absence as.
     *(test: `TestAnExchangeWithoutAScopeRequestInheritsTheSubjectsScope`, red
     first; mutant: inheritance dropped, caught. Scenario:
+    `features/delegation.feature`)*
+
+16. **A malformed but non-empty value is not a well-formed one, at startup
+    and at the proof check.** Four narrow gaps closed by the 2026-09-17
+    review, each one silent rather than loud:
+
+    `VOUCHRYX_TTL_SECONDS` was multiplied into a `time.Duration` before the
+    cap comparison, so a value past roughly 9.2e9 wrapped negative in that
+    multiplication and passed the cap check that ran after it:
+    `VOUCHRYX_TTL_SECONDS=9223372037` started a service with an effective
+    TTL of about `-2562047h`, every token already expired the instant it was
+    issued. The comparison now runs on the unmultiplied seconds.
+
+    A trusted JWKS entry with a `kid` but no `kty` passed `loadTrusted`
+    because only non-emptiness and `kid` were checked, so the service
+    started trusting a key that verifies nothing. `loadTrusted` now refuses a
+    key with an empty `Kty`, naming the issuer and the kid; an off-curve
+    point or a bad coordinate is still left to the library's own refusal at
+    verification time, fail closed, on purpose (a full key validator here
+    would be an `agent-stack-go` surface addition).
+
+    `loadKey` accepted any EC curve, so a P-384 or P-521 signing key started
+    a service that says ES256 while its published JWKS carries a
+    disagreeing `crv`. `SignES256` refusing a mismatched key is
+    `agent-stack-go`'s own fix, in the library; this repository refuses at
+    STARTUP under this invariant regardless of which library version it
+    pins, naming the curve found, for both PEM forms this service reads.
+
+    The DPoP `htu` a proof is checked against was built from `r.Host` and
+    `r.TLS`, the request's own socket, rather than from `VOUCHRYX_ISSUER`, so
+    behind a TLS terminator or any reverse proxy this service saw `http` and
+    an internal host, and an honest proof, minted for the public URL the
+    client actually called, was refused with `bad_dpop_proof`. The expected
+    `htu` (`api.expectedHTU`) is now the configured issuer, trimmed of a
+    trailing slash, plus the request path; `VOUCHRYX_ISSUER` is validated as
+    an absolute `http` or `https` URL with a host and no query or fragment,
+    because it is now what a proof is checked against as well as what `iss`
+    names.
+    *(tests: `TestATTLThatOverflowsTimeDurationIsRefusedByTheCapBeforeWrapping`,
+    `TestATrustedKeyWithNoKtyIsRefused`, `TestASigningKeyNotOnP256IsRefused`,
+    `TestAnIssuerThatIsNotAnAbsoluteURLIsRefused` (`internal/config`),
+    `TestAnHonestProofBehindATLSTerminatorIsAccepted`,
+    `TestAProofMintedForTheSocketURLRatherThanTheIssuerIsRefused`,
+    `TestATrailingSlashOnTheIssuerStillYieldsTheSameExpectedHtu`
+    (`internal/api`); mutants: the TTL comparison moved back above the
+    multiplication, the `Kty` check dropped, the curve check dropped, the
+    `htu` builder reverted to `r.Host`/`r.TLS`, each caught. Scenarios:
     `features/delegation.feature`)*

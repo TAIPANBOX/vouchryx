@@ -8,9 +8,6 @@ package api
 
 import (
 	"crypto/ecdsa"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -60,20 +57,7 @@ func (s *stand) boundInput(t *testing.T, sub string, k *ecdsa.PrivateKey, over m
 // proofFrom is `proof` for a named key rather than the stand's holder.
 func (s *stand) proofFrom(t *testing.T, k *ecdsa.PrivateKey, jti string) string {
 	t.Helper()
-	header, _ := json.Marshal(map[string]any{
-		"typ": "dpop+jwt", "alg": "ES256", "jwk": delegation.FromPublic(&k.PublicKey, ""),
-	})
-	claims, _ := json.Marshal(map[string]any{
-		"htm": "POST", "htu": "http://vouchryx.test/v1/token",
-		"iat": s.now.Unix(), "jti": jti,
-	})
-	signing := enc(header) + "." + enc(claims)
-	sum := sha256.Sum256([]byte(signing))
-	r, sg, err := ecdsa.Sign(rand.Reader, k, sum[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return signing + "." + enc(append(pad32(r), pad32(sg)...))
+	return s.proofForHTU(t, k, jti, ourIss+"/v1/token")
 }
 
 // firstHop issues alice -> triage, bound to the stand's holder key, with the

@@ -107,18 +107,32 @@ func (s *stand) input(t *testing.T, sub string, over map[string]any) string {
 	return tok
 }
 
+// proof mints a DPoP proof for the stand's holder key, bound to the
+// configured issuer's own /v1/token. Since the 2026-09-17 review the expected
+// htu is built from VOUCHRYX_ISSUER, not from the request's own r.Host
+// (api.expectedHTU), so this already exercises the TLS-terminator shape: the
+// request itself still carries the literal http://vouchryx.test/... URL every
+// stand request uses (see exchangeScope), which differs from ourIss on
+// purpose.
 func (s *stand) proof(t *testing.T, jti string) string {
 	t.Helper()
+	return s.proofForHTU(t, s.holder, jti, ourIss+"/v1/token")
+}
+
+// proofForHTU mints a DPoP proof for an arbitrary key and htu, for the tests
+// that are about the htu check itself rather than about the exchange.
+func (s *stand) proofForHTU(t *testing.T, k *ecdsa.PrivateKey, jti, htu string) string {
+	t.Helper()
 	header, _ := json.Marshal(map[string]any{
-		"typ": "dpop+jwt", "alg": "ES256", "jwk": delegation.FromPublic(&s.holder.PublicKey, ""),
+		"typ": "dpop+jwt", "alg": "ES256", "jwk": delegation.FromPublic(&k.PublicKey, ""),
 	})
 	claims, _ := json.Marshal(map[string]any{
-		"htm": "POST", "htu": "http://vouchryx.test/v1/token",
+		"htm": "POST", "htu": htu,
 		"iat": s.now.Unix(), "jti": jti,
 	})
 	signing := enc(header) + "." + enc(claims)
 	sum := sha256.Sum256([]byte(signing))
-	r, sg, err := ecdsa.Sign(rand.Reader, s.holder, sum[:])
+	r, sg, err := ecdsa.Sign(rand.Reader, k, sum[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,6 +332,76 @@ func TestATokenMintedForSomebodyElseCannotBeSpentHere(t *testing.T) {
 		s.input(t, "agent://acme/triage", nil), s.proof(t, "p4"))
 	if w.Code == http.StatusOK {
 		t.Fatal("a token for another audience was exchanged")
+	}
+}
+
+// The htu fix (2026-09-17 review): absoluteURL built the expected htu from
+// r.TLS and r.Host, the request's own socket. Behind a TLS terminator or any
+// reverse proxy this service sees http and an internal host, so an honest
+// proof, minted for the public URL the client actually called, was refused.
+// s.proof already mints htu from the configured issuer (ourIss), which is
+// exactly this shape: the request below still carries the literal
+// http://vouchryx.test/... URL every stand request uses.
+func TestAnHonestProofBehindATLSTerminatorIsAccepted(t *testing.T) {
+	s := newStand(t)
+	w, _ := s.exchange(t,
+		s.input(t, "user://acme/alice", nil),
+		s.input(t, "agent://acme/triage", nil),
+		s.proof(t, "terminator-1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("an honest proof behind a TLS terminator was refused: %d %s", w.Code, w.Body)
+	}
+}
+
+// The negative control for the same fix: a proof minted for the request's own
+// socket URL, rather than for the configured issuer, is still refused.
+// Without this test, a mutant reverting to the old r.Host-based builder would
+// accept exactly this proof.
+func TestAProofMintedForTheSocketURLRatherThanTheIssuerIsRefused(t *testing.T) {
+	s := newStand(t)
+	proof := s.proofForHTU(t, s.holder, "socket-1", "http://vouchryx.test/v1/token")
+	w, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), proof)
+	if w.Code == http.StatusOK {
+		t.Fatal("a proof minted for the raw socket URL, not the configured issuer, was accepted")
+	}
+}
+
+// The issuer's own trailing slash must not change the htu it is the base of:
+// an operator who copies VOUCHRYX_ISSUER with a trailing slash into place must
+// not get a double slash nobody's proof will ever match.
+func TestATrailingSlashOnTheIssuerStillYieldsTheSameExpectedHtu(t *testing.T) {
+	s := newStand(t)
+	s.srv.Cfg.Issuer = ourIss + "/"
+	w, _ := s.exchange(t,
+		s.input(t, "user://acme/alice", nil),
+		s.input(t, "agent://acme/triage", nil),
+		s.proof(t, "trailing-slash"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("a trailing slash on the issuer broke the expected htu: %d %s", w.Code, w.Body)
+	}
+}
+
+// S1 (2026-09-17 review): invariant 5 says a refusal says nothing about which
+// check failed. A widened scope is the one deliberate exception, and this
+// pins both codes in one test rather than trusting two separate tests never
+// to drift towards each other: RFC 8693 leaves scope to the authorization
+// server, and invalid_scope names a different problem from invalid_grant.
+func TestAWidenedScopeGetsADifferentOAuthCodeThanEveryOtherRefusal(t *testing.T) {
+	s := newStand(t)
+	_, scopeBody := s.exchangeScope(t,
+		s.input(t, "user://acme/alice", map[string]any{"scope": "read"}),
+		s.input(t, "agent://acme/triage", nil),
+		s.proof(t, "s1-scope"),
+		"read write")
+	if scopeBody["error"] != "invalid_scope" {
+		t.Fatalf("a widened scope did not get invalid_scope: %v", scopeBody)
+	}
+	_, otherBody := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), "")
+	if otherBody["error"] != "invalid_grant" {
+		t.Fatalf("a non-scope refusal did not get invalid_grant: %v", otherBody)
+	}
+	if scopeBody["error"] == otherBody["error"] {
+		t.Fatal("the two paths must name different problems, not the same one")
 	}
 }
 

@@ -171,7 +171,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		deny("", "no_dpop_proof", nil)
 		return
 	}
-	thumb, err := s.Proofs.Check(proof, r.Method, absoluteURL(r), s.now())
+	thumb, err := s.Proofs.Check(proof, r.Method, s.expectedHTU(r), s.now())
 	if err != nil {
 		deny("", "bad_dpop_proof", map[string]any{"detail": err.Error()})
 		return
@@ -702,12 +702,19 @@ func asUnix(v any) (int64, bool) {
 	return int64(f), true
 }
 
-func absoluteURL(r *http.Request) string {
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	return scheme + "://" + r.Host + r.URL.Path
+// expectedHTU is the `htu` (RFC 9449 section 4.2) a DPoP proof on this
+// request must carry: the configured issuer, not the socket this process
+// happens to be listening on.
+//
+// Behind a TLS terminator or any reverse proxy this service sees http and an
+// internal host, so building the expected htu from r.TLS and r.Host (as this
+// used to) refused every honest proof, minted for the public URL the client
+// actually called, with bad_dpop_proof (found by the 2026-09-17 review).
+// VOUCHRYX_ISSUER is already this service's public identity, and
+// config.FromEnv now requires it to parse as an absolute URL for exactly this
+// use, so it is the base here instead.
+func (s *Server) expectedHTU(r *http.Request) string {
+	return strings.TrimRight(s.Cfg.Issuer, "/") + r.URL.Path
 }
 
 func audienceMatches(aud any, want string) bool {

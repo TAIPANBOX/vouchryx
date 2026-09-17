@@ -70,6 +70,15 @@ func realServer(t *testing.T) *stand {
 	}
 	h := httptest.NewServer(srv.Routes())
 	t.Cleanup(h.Close)
+	// The expected DPoP htu is built from the configured issuer, not from
+	// the request's own socket, since the 2026-09-17 review. This client
+	// mints its proof for s.endpoint() (the real socket, below), so the
+	// issuer must equal it for that to be the request this service actually
+	// checks against; handlers read s.Cfg per request, so setting this after
+	// Routes() was already handed to httptest.NewServer still takes effect.
+	// The terminator shape itself (issuer differs from the request's own
+	// host) is exercised by api_test.go's stand instead.
+	srv.Cfg.Issuer = h.URL
 	return &stand{http: h, idp: idp, holder: holder, now: now}
 }
 
