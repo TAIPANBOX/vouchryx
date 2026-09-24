@@ -344,3 +344,22 @@ not a convenience.
     fragment half of the query-or-fragment check dropped on its own, the
     `htu` builder reverted to `r.Host`/`r.TLS`, each caught. Scenarios:
     `features/delegation.feature`)*
+
+17. **A revocation outlives the process that recorded it.** With
+    `VOUCHRYX_REVOCATIONS_PATH` set, `POST /v1/revoke` answers 200 only after the entry
+    is on disk; a restart restores every entry that can still match a token; a record
+    the service cannot read, or one naming nobody, refuses the start, except a
+    half-written LAST line, which no caller was ever told about and which is discarded
+    and logged. The list takes the entry BEFORE the disk does, so a revocation the disk
+    refused is in force in this process while the caller gets 503
+    (`revocation_not_durable`) and the event says `durable: false`; after one failed
+    write the store refuses every later one, so a torn line is always the last.
+    Unset, the service says at startup that a restart forgets.
+    *(tests: `TestARevocationSurvivesARealRestart` (the real binary, SIGKILL, red on the
+    unfixed code), `TestARevocationTheDiskRefusedAnswers503AndStaysInForce`,
+    `TestADurableRevocationIsOnTheStoreWhenItIsAnswered`,
+    `TestTheRecordSaysWhetherARevocationIsDurable`, and the nine store tests in
+    `internal/revoke/store_test.go`, one of them a sweep that cuts the file at every
+    byte; mutants M1 to M8 of the plan, each caught; M9, a
+    dropped fsync, survives every test and is held by reading. Scenarios:
+    `features/delegation.feature`)*

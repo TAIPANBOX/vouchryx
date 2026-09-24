@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-84-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-100-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -140,6 +140,8 @@ VOUCHRYX_SIGNING_KEY      path to a PEM EC private key; it issues ES256
 VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path`, one per line
 VOUCHRYX_TTL_SECONDS      default 300, capped at 3600
 VOUCHRYX_EVENTS_PATH      agent-event NDJSON; unset means nothing is recorded
+VOUCHRYX_REVOCATIONS_PATH revocations kept on disk across a restart; unset,
+                          a restart forgets them
 ```
 
 A missing or malformed value **aborts the process** and names the variable. A
@@ -271,7 +273,7 @@ pick one.
 
 ## Testing
 
-72 tests. Tier T3: these are authorization decisions where a wrong answer is
+85 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;
@@ -295,9 +297,10 @@ go test ./...
 
 Stated here rather than left to be discovered.
 
-- **The revocation list is in memory.** A restart forgets, and every revoked
-  token whose `exp` has not passed becomes live again. This is the one thing
-  here that needs a store before the service is trusted with a real incident.
+- **The revocation store is a local file**: no replication, no cross-instance
+  sharing, compacted only at start (a long-running process under heavy
+  revocation grows it until the next start), and fsync ordering is held by
+  reading, not by a test.
 - **The DPoP replay cache is in memory too**, bounded by a 60-second window. For
   one window after a restart, a captured proof could be replayed once.
 - **One enforcement point verifies these tokens on a request path, and it is

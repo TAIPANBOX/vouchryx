@@ -363,3 +363,36 @@ Feature: A delegation that can be proved, and ended
     When it is submitted
     Then it is refused, because a revocation the response calls successful
       must not be one that expires before anyone can poll for it
+
+  # @test:TestARevocationSurvivesARealRestart
+  Scenario: A revocation outlives the process that recorded it
+    Given an operator has configured a revocation store and a revocation key
+    And an agent's delegation has been revoked
+    When the service is killed and started again
+    Then the revocation is still on the list enforcement points poll,
+      because a restart that un-revoked a live token would reopen the incident
+
+  # @test:TestARevocationTheDiskRefusedAnswers503AndStaysInForce
+  Scenario: A revocation the disk refused is in force and is not called a success
+    Given the revocation store cannot be written
+    When a well-formed, authorised revocation is submitted
+    Then the list enforces it at once
+    And the caller is answered 503, because only a durable revocation may be called a success
+
+  # @test:TestAMalformedLineThatIsNotTheLastRefusesToOpen
+  Scenario: A damaged store refuses to start rather than forget a revocation
+    Given a revocation store with an unreadable record before its last line
+    When the service starts
+    Then it refuses to start, because a store it cannot read completely may hide a revocation
+
+  # @test:TestATornLastLineIsDiscardedAndReported
+  Scenario: A half-written last record is discarded and said so
+    Given the process died while writing its last revocation, before answering the caller
+    When the service starts
+    Then that record is discarded and the log says so, because no caller was told it was durable
+
+  # @test:TestAnExpiredEntryIsDroppedAndTheFileCompacted
+  Scenario: The store forgets what can no longer match a token
+    Given a store holding revocations whose last matching token has expired
+    When the service starts
+    Then those entries are dropped from the list and from the file
