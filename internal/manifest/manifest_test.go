@@ -413,3 +413,79 @@ func TestEveryDeclaredEntryCarriesItsReason(t *testing.T) {
 		}
 	}
 }
+
+// A revocation outlives the process that recorded it. Killed, not stopped
+// politely: SIGKILL gives the process no chance to flush anything, which is
+// what a crash or an out-of-memory kill does.
+func TestARevocationSurvivesARealRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts processes")
+	}
+	_, r := load(t)
+	bin := filepath.Join(t.TempDir(), "vouchryx")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/vouchryx")
+	build.Dir = r
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building: %v\n%s", err, out)
+	}
+	full := workingEnvironment(t, r)
+	full["VOUCHRYX_REVOKE_KEYS"] = "restart-test-key-0123456789"
+	full["VOUCHRYX_REVOCATIONS_PATH"] = filepath.Join(t.TempDir(), "revocations.ndjson")
+	env := []string{}
+	for k, v := range full {
+		env = append(env, k+"="+v)
+	}
+	addr := full["VOUCHRYX_ADDR"]
+	start := func() *exec.Cmd {
+		cmd := exec.Command(bin)
+		cmd.Env = env
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if !waitFor(addr, 10*time.Second) {
+			_ = cmd.Process.Kill()
+			t.Fatalf("the service never listened on %s", addr)
+		}
+		return cmd
+	}
+
+	first := start()
+	body := `{"actor":"user://acme/alice","reason":"credential in a paste","subject":"agent://acme/triage"}`
+	req, err := http.NewRequest("POST", "http://"+addr+"/v1/revoke", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+full["VOUCHRYX_REVOKE_KEYS"])
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the revocation answered %d before the restart", resp.StatusCode)
+	}
+	_ = first.Process.Kill()
+	_ = first.Wait()
+
+	second := start()
+	defer func() { _ = second.Process.Kill(); _ = second.Wait() }()
+	resp, err = http.Get("http://" + addr + "/v1/revocations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got struct {
+		Revocations []struct {
+			Subject string `json:"subject"`
+		} `json:"revocations"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range got.Revocations {
+		if e.Subject == "agent://acme/triage" {
+			return
+		}
+	}
+	t.Fatalf("after a restart the list holds %+v; the revocation made before it is gone", got.Revocations)
+}

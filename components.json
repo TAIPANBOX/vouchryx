@@ -35,7 +35,8 @@
           "VOUCHRYX_TRUSTED_ISSUERS": { "required": true },
           "VOUCHRYX_TTL_SECONDS": { "required": false },
           "VOUCHRYX_EVENTS_PATH": { "required": false },
-          "VOUCHRYX_REVOKE_KEYS": { "required": false }
+          "VOUCHRYX_REVOKE_KEYS": { "required": false },
+          "VOUCHRYX_REVOCATIONS_PATH": { "required": false }
         },
         "missing_required_exit_code": 2
       },
@@ -55,6 +56,10 @@
         "revoke_keys_default": {
           "value": "unset: /v1/revoke refuses every call, rather than accepting one from whoever can reach the port",
           "why": "VOUCHRYX_REVOKE_KEYS is optional because making it REQUIRED would stop every existing bring-up, and an optional value needs its unset behaviour on record somewhere a launcher can read it: fail closed here, never open, is a decision and not an accident of the zero value."
+        },
+        "revocations_path_default": {
+          "value": "unset: revocations live in memory only and the service says so at startup",
+          "why": "optional because making it required would stop every existing bring-up; a launcher that wants a restart not to un-revoke sets it to a file on a persistent volume"
         }
       }
     },
