@@ -15,6 +15,9 @@
 //	VOUCHRYX_TTL_SECONDS      default 300, capped at one hour
 //	VOUCHRYX_EVENTS_PATH      agent-event NDJSON, optional
 //	VOUCHRYX_REVOCATIONS_PATH where revocations are kept across a restart, optional
+//	VOUCHRYX_CLIENTS          Cross App Access client table, optional; unset closes the grant
+//	VOUCHRYX_RESOURCES        Cross App Access resources, required once VOUCHRYX_CLIENTS is set
+//	VOUCHRYX_XAA_REQUIRE_DPOP "true" or "false" (default), optional
 package main
 
 import (
@@ -30,6 +33,7 @@ import (
 	"github.com/TAIPANBOX/vouchryx/internal/api"
 	"github.com/TAIPANBOX/vouchryx/internal/config"
 	"github.com/TAIPANBOX/vouchryx/internal/revoke"
+	"github.com/TAIPANBOX/vouchryx/internal/xaa"
 )
 
 func main() {
@@ -47,6 +51,11 @@ func main() {
 		Cfg:    cfg,
 		Revs:   revs,
 		Proofs: delegation.NewVerifier(),
+		// Wired unconditionally, whether or not VOUCHRYX_CLIENTS is set: the
+		// jwt-bearer grant is closed by Cfg.XAAClients being nil regardless,
+		// and Server.Replay is assumed non-nil by construction, the same
+		// convention Revs and Proofs already follow.
+		Replay: xaa.NewReplayCache(),
 		Now:    time.Now,
 	}
 	if cfg.RevocationsPath != "" {
@@ -86,6 +95,14 @@ func main() {
 		srv.Events = w
 	} else {
 		log.Printf("vouchryx: VOUCHRYX_EVENTS_PATH is unset, so no delegation is recorded on the bus")
+	}
+
+	if cfg.XAAClients != nil {
+		log.Printf("vouchryx: Cross App Access is open: %d resource(s) configured, DPoP required: %v",
+			len(cfg.XAAResources), cfg.XAARequireDPoP)
+	} else {
+		log.Printf("vouchryx: VOUCHRYX_CLIENTS is unset, so the jwt-bearer grant (Cross App Access) " +
+			"answers unauthorized_client to every call")
 	}
 
 	if warn := bindWarning(cfg.Addr); warn != "" {

@@ -54,6 +54,16 @@ import (
 // server package to talk to it over HTTP.
 const GrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 
+// JWTBearerGrantType is RFC 7523's, for Cross App Access.
+const JWTBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
+// idJagTyp is the JWS header `typ` draft-ietf-oauth-identity-assertion-
+// authz-grant-04 section 3.1 requires, repeated here rather than imported
+// from internal/xaa so this client stays free of the server's own packages
+// (matching how internal/api's GrantType is repeated above rather than
+// imported).
+const idJagTyp = "oauth-id-jag+jwt"
+
 // GenerateKey mints a P-256 key. ES256 is the only algorithm this service
 // issues or accepts, so there is nothing to choose.
 func GenerateKey() (*ecdsa.PrivateKey, error) {
@@ -164,6 +174,86 @@ func Proof(holder *ecdsa.PrivateKey, htm, htu, jti string, now time.Time) (strin
 		return "", err
 	}
 	return signing + "." + enc(append(pad32(r), pad32(s)...)), nil
+}
+
+// MintIDJAG mints an ID-JAG to draft-ietf-oauth-identity-assertion-authz-
+// grant-04: the header `typ` a Resource Authorization Server checks before
+// anything else (RequiredTyp in internal/xaa), and the claims it verifies in
+// order after that (iss, sub, aud, client_id, jti, iat, exp, and optionally
+// resource and scope).
+//
+// This is signed by hand rather than through [delegation.SignES256], the
+// same reason [Proof] is: SignES256 hardcodes `typ: JWT`, and an ID-JAG's
+// typ is what stops an access token this service issued from being replayed
+// back to it as an assertion.
+func MintIDJAG(idp *ecdsa.PrivateKey, kid, iss, aud, sub, clientID, resource, scope string, now time.Time, ttl time.Duration) (string, error) {
+	header, err := json.Marshal(map[string]any{"typ": idJagTyp, "alg": "ES256", "kid": kid})
+	if err != nil {
+		return "", err
+	}
+	claims := map[string]any{
+		"iss": iss, "sub": sub, "aud": aud, "client_id": clientID,
+		"jti": fmt.Sprintf("idjag-%d", now.UnixNano()),
+		"iat": now.Unix(), "exp": now.Add(ttl).Unix(),
+	}
+	if resource != "" {
+		claims["resource"] = resource
+	}
+	if scope != "" {
+		claims["scope"] = scope
+	}
+	p, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	signing := enc(header) + "." + enc(p)
+	sum := sha256.Sum256([]byte(signing))
+	r, s, err := ecdsa.Sign(rand.Reader, idp, sum[:])
+	if err != nil {
+		return "", err
+	}
+	return signing + "." + enc(append(pad32(r), pad32(s)...)), nil
+}
+
+// RedeemIDJAG performs the RFC 7523 jwt-bearer call, authenticating with
+// client_secret_basic, and returns the issued access token.
+//
+// Like [Exchange], this is a CLIENT: every check stays at the far end, and a
+// bad credential minted here is refused there, loudly.
+func RedeemIDJAG(ctx context.Context, c *http.Client, endpoint, clientID, clientSecret, assertion, resource string) (string, error) {
+	form := url.Values{
+		"grant_type": {JWTBearerGrantType},
+		"assertion":  {assertion},
+	}
+	if resource != "" {
+		form.Set("resource", resource)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("content-type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(clientID, clientSecret)
+	resp, err := c.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("the redemption was refused: HTTP %d, %s",
+			resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var out struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("the response is not JSON this client understands: %w", err)
+	}
+	if out.AccessToken == "" {
+		return "", errors.New("the redemption returned no access_token")
+	}
+	return out.AccessToken, nil
 }
 
 // Exchange performs the RFC 8693 call and returns the issued token.

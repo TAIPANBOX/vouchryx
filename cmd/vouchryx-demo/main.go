@@ -44,6 +44,8 @@ func main() {
 		err = exchange(os.Args[2:])
 	case "proof":
 		err = proof(os.Args[2:])
+	case "xaa":
+		err = xaaCmd(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -75,6 +77,16 @@ func usage() {
       One DPoP proof, bound to one method and one destination. A token is
       bound to the key that proved possession at the exchange, so this must be
       the same key, and a fresh proof is needed per request.
+
+  xaa      -url <vouchryx-origin> -idp-key <pem> -kid <kid>
+           -iss <issuer> -aud <VOUCHRYX_ISSUER>
+           -sub <idp-subject> -client-id <id> -client-secret <secret>
+           -resource <url> [-scope <scope>]
+      Cross App Access, conformance not interop: mints an ID-JAG to
+      draft-ietf-oauth-identity-assertion-authz-grant-04 with a demo IdP key
+      and redeems it at POST /v1/token (grant_type
+      urn:ietf:params:oauth:grant-type:jwt-bearer), authenticating with
+      client_secret_basic, and prints the issued access token.
 `)
 }
 
@@ -193,5 +205,48 @@ func proof(args []string) error {
 		return err
 	}
 	fmt.Println(p)
+	return nil
+}
+
+func xaaCmd(args []string) error {
+	fs := flag.NewFlagSet("xaa", flag.ContinueOnError)
+	url := fs.String("url", "", "the vouchryx origin, e.g. http://127.0.0.1:4310")
+	idpKey := fs.String("idp-key", "", "PEM EC private key of the demo identity provider")
+	kid := fs.String("kid", "", "the kid naming that key in the trusted JWKS")
+	iss := fs.String("iss", "", "the IdP's `iss`, matching VOUCHRYX_TRUSTED_ISSUERS")
+	aud := fs.String("aud", "", "the audience, matching VOUCHRYX_ISSUER exactly")
+	sub := fs.String("sub", "", "the IdP's own subject identifier for the end user")
+	clientID := fs.String("client-id", "", "the client id, matching a VOUCHRYX_CLIENTS entry")
+	clientSecret := fs.String("client-secret", "", "the client secret VOUCHRYX_CLIENTS's digest was taken from")
+	resource := fs.String("resource", "", "the resource, matching VOUCHRYX_RESOURCES")
+	scope := fs.String("scope", "", "requested scope, optional")
+	ttl := fs.Duration("assertion-ttl", time.Minute, "how long the minted ID-JAG lives")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	for name, v := range map[string]string{
+		"-url": *url, "-idp-key": *idpKey, "-kid": *kid, "-iss": *iss, "-aud": *aud,
+		"-sub": *sub, "-client-id": *clientID, "-client-secret": *clientSecret, "-resource": *resource,
+	} {
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("%s is required", name)
+		}
+	}
+
+	idp, err := demo.ReadKey(*idpKey)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	assertion, err := demo.MintIDJAG(idp, *kid, *iss, *aud, *sub, *clientID, *resource, *scope, now, *ttl)
+	if err != nil {
+		return err
+	}
+	endpoint := strings.TrimRight(*url, "/") + "/v1/token"
+	tok, err := demo.RedeemIDJAG(context.Background(), http.DefaultClient, endpoint, *clientID, *clientSecret, assertion, *resource)
+	if err != nil {
+		return err
+	}
+	fmt.Println(tok)
 	return nil
 }
