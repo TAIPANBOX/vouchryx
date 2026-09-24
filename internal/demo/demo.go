@@ -55,7 +55,7 @@ import (
 const GrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 
 // JWTBearerGrantType is RFC 7523's, for Cross App Access.
-const JWTBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+const JWTBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer" // #nosec G101 -- OAuth grant-type URN, not a credential
 
 // idJagTyp is the JWS header `typ` draft-ietf-oauth-identity-assertion-
 // authz-grant-04 section 3.1 requires, repeated here rather than imported

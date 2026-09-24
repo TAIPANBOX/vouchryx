@@ -55,7 +55,7 @@ const GrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 // JWTBearerGrantType is the Cross App Access grant (RFC 7523), redeeming an
 // ID-JAG minted by a trusted identity provider. Closed by construction while
 // VOUCHRYX_CLIENTS is unset: see tokenJWTBearer in xaa.go.
-const JWTBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+const JWTBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer" // #nosec G101 -- OAuth grant-type URN, not a credential
 
 // TokenType is the `issued_token_type` this service returns.
 const TokenType = "urn:ietf:params:oauth:token-type:jwt" // #nosec G101 -- OAuth token-type URN, not a credential
