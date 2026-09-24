@@ -36,7 +36,10 @@
           "VOUCHRYX_TTL_SECONDS": { "required": false },
           "VOUCHRYX_EVENTS_PATH": { "required": false },
           "VOUCHRYX_REVOKE_KEYS": { "required": false },
-          "VOUCHRYX_REVOCATIONS_PATH": { "required": false }
+          "VOUCHRYX_REVOCATIONS_PATH": { "required": false },
+          "VOUCHRYX_CLIENTS": { "required": false },
+          "VOUCHRYX_RESOURCES": { "required": false },
+          "VOUCHRYX_XAA_REQUIRE_DPOP": { "required": false }
         },
         "missing_required_exit_code": 2
       },
@@ -60,6 +63,18 @@
         "revocations_path_default": {
           "value": "unset: revocations live in memory only and the service says so at startup",
           "why": "optional because making it required would stop every existing bring-up; a launcher that wants a restart not to un-revoke sets it to a file on a persistent volume"
+        },
+        "xaa_clients_default": {
+          "value": "unset: the jwt-bearer grant (Cross App Access) answers unauthorized_client to every call",
+          "why": "optional because making it required would stop every existing bring-up that does not use Cross App Access at all; a launcher that wants the grant open configures at least one client"
+        },
+        "xaa_resources_default": {
+          "value": "unset unless VOUCHRYX_CLIENTS is set, in which case FromEnv itself refuses to start without it",
+          "why": "optional at the schema level because it depends on VOUCHRYX_CLIENTS rather than being unconditionally required, which this manifest's binary required/optional split cannot express on its own; internal/config's own tests hold the conditional rule"
+        },
+        "xaa_require_dpop_default": {
+          "value": "unset or \"false\": the jwt-bearer grant accepts a bearer token when the caller presents no DPoP proof",
+          "why": "D2 of the interop plan: requiring DPoP unconditionally would make the grant unusable with clients that do not send it yet; an operator with DPoP-capable clients sets this to \"true\""
         }
       }
     },
