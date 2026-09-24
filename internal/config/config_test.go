@@ -5,7 +5,9 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"net"
 	"os"
@@ -482,4 +484,131 @@ func TestTheDefaultPortIsNotOneAnotherServiceAnswersOn(t *testing.T) {
 		t.Fatalf("the default port %s is %s's, so the two cannot start side by "+
 			"side on one box, and a box running both is the ordinary case", port, who)
 	}
+}
+
+// --- W3: Cross App Access (VOUCHRYX_CLIENTS, VOUCHRYX_RESOURCES,
+// VOUCHRYX_XAA_REQUIRE_DPOP) -------------------------------------------------
+
+func testDigest(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func baseXAAEnv(t *testing.T) map[string]string {
+	t.Helper()
+	key, jwks := ecKeyFile(t), jwksFile(t, "idp-1")
+	return map[string]string{
+		"VOUCHRYX_ISSUER":          "https://vouchryx.acme.example",
+		"VOUCHRYX_SIGNING_KEY":     key,
+		"VOUCHRYX_TRUSTED_ISSUERS": "https://idp.acme.example|https://vouchryx.acme.example|" + jwks,
+	}
+}
+
+// With VOUCHRYX_CLIENTS unset, this service comes up exactly as it always
+// has: XAAClients is nil, which is what makes the jwt-bearer grant answer
+// unauthorized_client to every call (internal/api, not this package).
+func TestWithNoClientsConfiguredXAAClientsIsNil(t *testing.T) {
+	withEnv(t, baseXAAEnv(t), func() {
+		c, err := FromEnv()
+		if err != nil {
+			t.Fatalf("a config with no VOUCHRYX_CLIENTS was refused: %v", err)
+		}
+		if c.XAAClients != nil {
+			t.Fatalf("VOUCHRYX_CLIENTS was unset and XAAClients is non-nil: %v", c.XAAClients)
+		}
+	})
+}
+
+func TestAMalformedClientsLineRefusesToStart(t *testing.T) {
+	env := baseXAAEnv(t)
+	env["VOUCHRYX_CLIENTS"] = "not-a-well-formed-line"
+	env["VOUCHRYX_RESOURCES"] = "https://broker.acme.example/mcp"
+	withEnv(t, env, func() {
+		if _, err := FromEnv(); err == nil {
+			t.Fatal("a malformed VOUCHRYX_CLIENTS line was accepted")
+		}
+	})
+}
+
+// VOUCHRYX_RESOURCES is required once VOUCHRYX_CLIENTS names at least one
+// client: without a resource to issue for, the grant would verify an
+// assertion and then have nothing to name as `aud`.
+func TestClientsConfiguredWithNoResourcesRefusesToStart(t *testing.T) {
+	env := baseXAAEnv(t)
+	env["VOUCHRYX_CLIENTS"] = "console|agent://acme/console|" + testDigest("s3cret")
+	withEnv(t, env, func() {
+		_, err := FromEnv()
+		if err == nil {
+			t.Fatal("VOUCHRYX_CLIENTS with no VOUCHRYX_RESOURCES was accepted")
+		}
+		if !strings.Contains(err.Error(), "VOUCHRYX_RESOURCES") {
+			t.Fatalf("the error does not name VOUCHRYX_RESOURCES: %v", err)
+		}
+	})
+}
+
+func TestAWellFormedClientsAndResourcesConfigComesUp(t *testing.T) {
+	env := baseXAAEnv(t)
+	env["VOUCHRYX_CLIENTS"] = "console|agent://acme/console|" + testDigest("s3cret")
+	env["VOUCHRYX_RESOURCES"] = "https://broker.acme.example/mcp,https://broker2.acme.example/mcp"
+	withEnv(t, env, func() {
+		c, err := FromEnv()
+		if err != nil {
+			t.Fatalf("a well-formed XAA config was refused: %v", err)
+		}
+		if c.XAAClients == nil {
+			t.Fatal("XAAClients is nil despite a configured VOUCHRYX_CLIENTS")
+		}
+		if _, ok := c.XAAClients.Authenticate("console", "s3cret"); !ok {
+			t.Fatal("the configured client's own secret was refused")
+		}
+		if len(c.XAAResources) != 2 {
+			t.Fatalf("XAAResources: got %v", c.XAAResources)
+		}
+	})
+}
+
+func TestABadRequireDPoPValueRefusesToStart(t *testing.T) {
+	for _, bad := range []string{"yes", "1", "TRUE", "false "} {
+		env := baseXAAEnv(t)
+		env["VOUCHRYX_XAA_REQUIRE_DPOP"] = bad
+		withEnv(t, env, func() {
+			_, err := FromEnv()
+			if err == nil {
+				t.Fatalf("VOUCHRYX_XAA_REQUIRE_DPOP=%q was accepted", bad)
+			}
+			if !strings.Contains(err.Error(), "VOUCHRYX_XAA_REQUIRE_DPOP") {
+				t.Fatalf("the error does not name VOUCHRYX_XAA_REQUIRE_DPOP: %v", err)
+			}
+		})
+	}
+}
+
+func TestRequireDPoPTrueAndFalseAndUnsetAreAllAccepted(t *testing.T) {
+	for value, want := range map[string]bool{"true": true, "false": false, "": false} {
+		env := baseXAAEnv(t)
+		if value != "" {
+			env["VOUCHRYX_XAA_REQUIRE_DPOP"] = value
+		}
+		withEnv(t, env, func() {
+			c, err := FromEnv()
+			if err != nil {
+				t.Fatalf("VOUCHRYX_XAA_REQUIRE_DPOP=%q was refused: %v", value, err)
+			}
+			if c.XAARequireDPoP != want {
+				t.Fatalf("VOUCHRYX_XAA_REQUIRE_DPOP=%q: got %v, want %v", value, c.XAARequireDPoP, want)
+			}
+		})
+	}
+}
+
+func TestANonAbsoluteResourceRefusesToStart(t *testing.T) {
+	env := baseXAAEnv(t)
+	env["VOUCHRYX_CLIENTS"] = "console|agent://acme/console|" + testDigest("s3cret")
+	env["VOUCHRYX_RESOURCES"] = "not-a-url"
+	withEnv(t, env, func() {
+		if _, err := FromEnv(); err == nil {
+			t.Fatal("a non-absolute VOUCHRYX_RESOURCES entry was accepted")
+		}
+	})
 }

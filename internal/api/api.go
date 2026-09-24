@@ -46,10 +46,16 @@ import (
 	"github.com/TAIPANBOX/agent-stack-go/event"
 	"github.com/TAIPANBOX/vouchryx/internal/config"
 	"github.com/TAIPANBOX/vouchryx/internal/revoke"
+	"github.com/TAIPANBOX/vouchryx/internal/xaa"
 )
 
-// GrantType is the one grant this service implements (RFC 8693 section 2.1).
+// GrantType is the token-exchange grant (RFC 8693 section 2.1).
 const GrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
+
+// JWTBearerGrantType is the Cross App Access grant (RFC 7523), redeeming an
+// ID-JAG minted by a trusted identity provider. Closed by construction while
+// VOUCHRYX_CLIENTS is unset: see tokenJWTBearer in xaa.go.
+const JWTBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer" // #nosec G101 -- OAuth grant-type URN, not a credential
 
 // TokenType is the `issued_token_type` this service returns.
 const TokenType = "urn:ietf:params:oauth:token-type:jwt" // #nosec G101 -- OAuth token-type URN, not a credential
@@ -80,6 +86,12 @@ type Server struct {
 	Store  RevocationStore
 	Proofs *delegation.Verifier
 	Events *event.Writer
+	// Replay is the Cross App Access jti replay cache (internal/xaa). Assumed
+	// non-nil by construction, the same convention Revs and Proofs already
+	// follow: cmd/vouchryx wires it unconditionally in main, whether or not
+	// VOUCHRYX_CLIENTS is set, so tokenJWTBearer never has to guard against a
+	// nil one, and no lazy-init-on-first-use exists to race under -race.
+	Replay *xaa.ReplayCache
 	// Now is injected so every time-dependent behaviour is testable without
 	// sleeping. A test that has to sleep to prove an expiry is a test nobody
 	// runs.
@@ -93,6 +105,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /v1/revoke", s.revokeHandler)
 	mux.HandleFunc("GET /v1/revocations", s.revocations)
 	mux.HandleFunc("GET /.well-known/jwks.json", s.jwks)
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.authServerMetadata)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -126,7 +139,12 @@ func (s *Server) revocations(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// token is RFC 8693 token delegation.
+// token dispatches on `grant_type`: RFC 8693 token exchange (unchanged since
+// this handler had any other grant) and, since W3, RFC 7523's jwt-bearer
+// grant for a Cross App Access ID-JAG (internal/xaa, tokenJWTBearer below).
+// Parsing the form is shared, because both grants are the same wire shape,
+// an ordinary form-encoded POST, and a body too large to read is the same
+// refusal regardless of which grant it claims to be using.
 func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	// Capped before anything reads it: a token-exchange request is a handful
 	// of JWS strings, and a caller who can reach the port must not be able to
@@ -140,6 +158,20 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "invalid_request", "unparseable_form", map[string]any{"detail": err.Error()})
 		return
 	}
+	switch r.PostForm.Get("grant_type") {
+	case GrantType:
+		s.tokenExchange(w, r)
+	case JWTBearerGrantType:
+		s.tokenJWTBearer(w, r)
+	default:
+		refuse(w, http.StatusBadRequest, "unsupported_grant_type", "grant_type_not_implemented", map[string]any{"asked_for": r.PostForm.Get("grant_type")})
+	}
+}
+
+// tokenExchange is RFC 8693 token delegation, unchanged by W3: every test
+// that exercised this body when it lived directly inside token still
+// exercises the same code, now reached through the dispatch above.
+func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 	// The SUBJECT is the first argument, and it is `""` at every call site that
 	// runs before a subject token has been verified. That is deliberate and it
 	// is why this is a parameter rather than something captured: `emit` drops a
@@ -164,11 +196,6 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	denyScope := func(sub, reason string, detail map[string]any) {
 		s.emit("delegation_denied", sub, nil, merge(detail, map[string]any{"reason": reason}))
 		refuse(w, http.StatusBadRequest, "invalid_scope", reason, detail)
-	}
-
-	if r.PostForm.Get("grant_type") != GrantType {
-		refuse(w, http.StatusBadRequest, "unsupported_grant_type", "grant_type_not_implemented", map[string]any{"asked_for": r.PostForm.Get("grant_type")})
-		return
 	}
 
 	// The DPoP proof first: it costs least and it decides what the token is

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/TAIPANBOX/agent-stack-go/delegation"
+	"github.com/TAIPANBOX/vouchryx/internal/xaa"
 )
 
 // DefaultTTL is how long an issued delegation lives.
@@ -71,6 +72,21 @@ type Config struct {
 	// would stop every existing bring-up; unset, the service says at startup
 	// that a restart forgets.
 	RevocationsPath string
+	// XAAClients is the parsed VOUCHRYX_CLIENTS table for the Cross App
+	// Access jwt-bearer grant. OPTIONAL: nil (VOUCHRYX_CLIENTS unset) is what
+	// makes that grant answer unauthorized_client to every call, fail closed
+	// exactly as an empty RevokeKeys closes /v1/revoke.
+	XAAClients *xaa.Clients
+	// XAAResources is the parsed VOUCHRYX_RESOURCES list: the only audiences
+	// the jwt-bearer grant may issue an access token for. REQUIRED once
+	// XAAClients is non-nil (checked below, not by this field's own
+	// emptiness): without one the grant would verify an assertion and then
+	// have nothing to name as `aud`.
+	XAAResources []string
+	// XAARequireDPoP makes a DPoP proof mandatory on the jwt-bearer grant.
+	// OPTIONAL; false (VOUCHRYX_XAA_REQUIRE_DPOP unset or "false") accepts a
+	// bearer token when the caller sends no proof (D2 of the interop plan).
+	XAARequireDPoP bool
 }
 
 // DefaultAddr is where this service listens when nothing says otherwise.
@@ -151,6 +167,47 @@ func FromEnv() (Config, error) {
 				"exchange tokens it has no way to verify")
 	}
 	c.Trusted = trusted
+
+	// A malformed but non-empty VOUCHRYX_XAA_REQUIRE_DPOP is refused
+	// unconditionally, the same "malformed is not well-formed" discipline
+	// invariant 16 already holds for VOUCHRYX_TTL_SECONDS: an operator who
+	// typed "yes" or "1" meaning true must be told, rather than silently get
+	// the false this switch's default would otherwise give them.
+	switch raw := os.Getenv("VOUCHRYX_XAA_REQUIRE_DPOP"); raw {
+	case "", "false":
+		c.XAARequireDPoP = false
+	case "true":
+		c.XAARequireDPoP = true
+	default:
+		return c, fmt.Errorf(
+			"VOUCHRYX_XAA_REQUIRE_DPOP is %q; it must be exactly \"true\" or \"false\"", raw)
+	}
+
+	if spec := os.Getenv("VOUCHRYX_CLIENTS"); spec != "" {
+		clients, err := xaa.ParseClients(spec)
+		if err != nil {
+			return c, fmt.Errorf("VOUCHRYX_CLIENTS: %w", err)
+		}
+		c.XAAClients = clients
+	}
+	if spec := os.Getenv("VOUCHRYX_RESOURCES"); spec != "" {
+		resources, err := xaa.ParseResources(spec)
+		if err != nil {
+			return c, fmt.Errorf("VOUCHRYX_RESOURCES: %w", err)
+		}
+		c.XAAResources = resources
+	}
+	// VOUCHRYX_RESOURCES is required exactly when VOUCHRYX_CLIENTS names at
+	// least one client: without a resource, the jwt-bearer grant would
+	// verify an assertion and then have nothing to name as `aud`. It stays
+	// optional otherwise, because requiring it unconditionally would stop
+	// every bring-up that does not use Cross App Access at all.
+	if c.XAAClients != nil && len(c.XAAResources) == 0 {
+		return c, errors.New(
+			"VOUCHRYX_RESOURCES is required when VOUCHRYX_CLIENTS is set: without one " +
+				"the jwt-bearer grant would have no audience to issue an access token for")
+	}
+
 	return c, nil
 }
 

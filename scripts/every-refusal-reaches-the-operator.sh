@@ -23,39 +23,54 @@
 # and every one of them must be inside `refuse`. A list in this file would be a
 # second place a refusal has to be registered, and the failure it invites is the
 # silent one.
+#
+# EVERY non-test file in internal/api/, not only api.go: W3 split the HTTP
+# surface across api.go and xaa.go (the jwt-bearer grant and the
+# authorization-server metadata route), and a gate that still read one
+# hardcoded filename would have gone on reporting a clean surface while never
+# looking at the other file at all, the exact shape of gate this repository's
+# own CLAUDE.md calls worse than no gate: one that agrees over a check it is
+# not actually making.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 python3 - <<'PY'
 import re, sys, pathlib
 
-SRC = pathlib.Path("internal/api/api.go")
-lines = SRC.read_text().split("\n")
+SRCS = sorted(p for p in pathlib.Path("internal/api").glob("*.go") if not p.name.endswith("_test.go"))
+if not SRCS:
+    print("no non-test .go file exists under internal/api, so this gate measured nothing.")
+    sys.exit(1)
 
-# Which function each line sits in, so "inside refuse" is a fact rather than a
-# guess about proximity.
-fn_at, current = {}, None
-for i, line in enumerate(lines, 1):
-    m = re.match(r"^func (?:\([^)]*\) )?([A-Za-z_][A-Za-z0-9_]*)", line)
-    if m:
-        current = m.group(1)
-    fn_at[i] = current
-
-# EVERY writeJSON, not only the ones naming a literal status. The first draft
-# of this gate matched `http.Status<Name>` and would have been blind to
-# `writeJSON(w, status, ...)`, which is how `refuse` itself writes: a new site
-# passing a computed status would have been invisible to the check written to
-# find exactly that. Same defect this file exists to prevent, one level up.
 responses = []
-for i, line in enumerate(lines, 1):
-    if line.lstrip().startswith("//"):
-        continue
-    m = re.search(r"writeJSON\(\s*w\s*,\s*([A-Za-z_][A-Za-z0-9_.]*)", line)
-    if m:
-        responses.append((i, m.group(1), fn_at[i]))
+for SRC in SRCS:
+    lines = SRC.read_text().split("\n")
+
+    # Which function each line sits in, so "inside refuse" is a fact rather
+    # than a guess about proximity. Reset per file: a function name is only
+    # ever meaningful within the file that defines it.
+    fn_at, current = {}, None
+    for i, line in enumerate(lines, 1):
+        m = re.match(r"^func (?:\([^)]*\) )?([A-Za-z_][A-Za-z0-9_]*)", line)
+        if m:
+            current = m.group(1)
+        fn_at[i] = current
+
+    # EVERY writeJSON, not only the ones naming a literal status. The first
+    # draft of this gate matched `http.Status<Name>` and would have been
+    # blind to `writeJSON(w, status, ...)`, which is how `refuse` itself
+    # writes: a new site passing a computed status would have been invisible
+    # to the check written to find exactly that. Same defect this file
+    # exists to prevent, one level up.
+    for i, line in enumerate(lines, 1):
+        if line.lstrip().startswith("//"):
+            continue
+        m = re.search(r"writeJSON\(\s*w\s*,\s*([A-Za-z_][A-Za-z0-9_.]*)", line)
+        if m:
+            responses.append((SRC, i, m.group(1), fn_at[i]))
 
 if not responses:
-    print(f"no `writeJSON(w, http.Status...)` call was found in {SRC}, so this")
+    print(f"no `writeJSON(w, http.Status...)` call was found in {', '.join(str(s) for s in SRCS)}, so this")
     print("gate measured nothing. Either the HTTP surface moved or this")
     print("script's discovery broke; both need a person, and neither is a pass.")
     sys.exit(1)
@@ -71,13 +86,13 @@ SUCCESSES = {
 # at run time cannot be read here, so the safe reading is the one that requires
 # the funnel.
 bad = [
-    (i, status, fn)
-    for i, status, fn in responses
+    (src, i, status, fn)
+    for src, i, status, fn in responses
     if status not in SUCCESSES and fn != "refuse"
 ]
 
-for i, status, fn in bad:
-    print(f"{SRC}:{i}: a `{status}` response is written in `{fn}`, not in `refuse`.")
+for src, i, status, fn in bad:
+    print(f"{src}:{i}: a `{status}` response is written in `{fn}`, not in `refuse`.")
     print("  Every way out of this service that is not a success has to reach the")
     print("  operator's log, and `refuse` is the only thing that writes one. A")
     print("  response written anywhere else is a refusal nobody outside the")

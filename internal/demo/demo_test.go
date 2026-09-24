@@ -8,7 +8,9 @@ package demo_test
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -22,6 +24,7 @@ import (
 	"github.com/TAIPANBOX/vouchryx/internal/config"
 	"github.com/TAIPANBOX/vouchryx/internal/demo"
 	"github.com/TAIPANBOX/vouchryx/internal/revoke"
+	"github.com/TAIPANBOX/vouchryx/internal/xaa"
 )
 
 const (
@@ -33,9 +36,28 @@ const (
 
 type stand struct {
 	http   *httptest.Server
+	srv    *api.Server
 	idp    *ecdsa.PrivateKey
 	holder *ecdsa.PrivateKey
 	now    time.Time
+}
+
+// withXAA configures the Cross App Access grant on an already-running stand:
+// one client and one resource. Handlers read Cfg per request, the same
+// reason realServer can set Cfg.Issuer after Routes() has already been
+// handed to httptest.NewServer.
+func (s *stand) withXAA(t *testing.T, clientID, clientSecret, agent, resource string) *stand {
+	t.Helper()
+	sum := sha256.Sum256([]byte(clientSecret))
+	spec := clientID + "|" + agent + "|sha256:" + hex.EncodeToString(sum[:])
+	clients, err := xaa.ParseClients(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.srv.Cfg.XAAClients = clients
+	s.srv.Cfg.XAAResources = []string{resource}
+	s.srv.Replay = xaa.NewReplayCache()
+	return s
 }
 
 // realServer stands up the SAME server binary path an operator runs, wired the
@@ -79,7 +101,7 @@ func realServer(t *testing.T) *stand {
 	// The terminator shape itself (issuer differs from the request's own
 	// host) is exercised by api_test.go's stand instead.
 	srv.Cfg.Issuer = h.URL
-	return &stand{http: h, idp: idp, holder: holder, now: now}
+	return &stand{http: h, srv: srv, idp: idp, holder: holder, now: now}
 }
 
 func mustKey(t *testing.T) *ecdsa.PrivateKey {
@@ -243,6 +265,55 @@ func TestAWrittenKeySetCarriesNoPrivateMemberAndNamesItsKey(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("the private key is mode %v; a private key's mode is not left to the umask", info.Mode().Perm())
+	}
+}
+
+// The same "this package mints, the server refuses or accepts" philosophy,
+// for the Cross App Access grant: vouchryx-demo xaa mints an ID-JAG to
+// draft-ietf-oauth-identity-assertion-authz-grant-04 and redeems it, so the
+// loop is walkable from a shell for this grant too, not only the exchange.
+func TestTheServerAcceptsAnIDJAGThisPackageMints(t *testing.T) {
+	s := realServer(t)
+	const (
+		clientID, secret, agent = "console", "s3cret-console-secret", "agent://acme/console"
+	)
+	resource := s.http.URL + "/mcp"
+	s.withXAA(t, clientID, secret, agent, resource)
+
+	assertion, err := demo.MintIDJAG(s.idp, idpKid, idpIss, s.http.URL, "alice", clientID, resource, "", s.now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := demo.RedeemIDJAG(context.Background(), s.http.Client(), s.endpoint(), clientID, secret, assertion, resource)
+	if err != nil {
+		t.Fatalf("the server refused an ID-JAG this package minted: %v", err)
+	}
+	claims := payload(t, tok)
+	if claims["sub"] != "user://idp.acme.example/alice" {
+		t.Fatalf("sub = %v, want the mapped user:// identity", claims["sub"])
+	}
+	if claims["aud"] != resource {
+		t.Fatalf("aud = %v, want the resource %q", claims["aud"], resource)
+	}
+	if _, refreshed := claims["refresh_token"]; refreshed {
+		t.Fatal("a refresh_token claim reached the issued access token")
+	}
+}
+
+func TestARedemptionWithTheWrongClientSecretIsRefused(t *testing.T) {
+	s := realServer(t)
+	const (
+		clientID, secret, agent = "console", "s3cret-console-secret", "agent://acme/console"
+	)
+	resource := s.http.URL + "/mcp"
+	s.withXAA(t, clientID, secret, agent, resource)
+
+	assertion, err := demo.MintIDJAG(s.idp, idpKid, idpIss, s.http.URL, "alice", clientID, resource, "", s.now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := demo.RedeemIDJAG(context.Background(), s.http.Client(), s.endpoint(), clientID, "wrong-secret", assertion, resource); err == nil {
+		t.Fatal("a redemption with the wrong client secret was accepted")
 	}
 }
 

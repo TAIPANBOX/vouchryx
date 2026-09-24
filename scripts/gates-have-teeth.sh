@@ -38,6 +38,37 @@ PY
   printf "ok  %-56s (%s)\n" "$1" "$5"
 }
 
+
+# fault_all_multi is fault_all spread across more than one file at once, for
+# a fault whose honest shape spans every file a gate reads. W3 split the HTTP
+# surface across api.go and xaa.go, and every-refusal-reaches-the-operator.sh
+# now reads every non-test file under internal/api/; a case that blanked only
+# one of them would leave the gate finding the other file's responses and
+# reporting a clean surface, which is a case reporting toothless over a gate
+# that still works, the opposite failure from the one this file exists to
+# catch but just as much a lie about what was tested.
+fault_all_multi() { # name "file1 file2 ..." from to expect(fail|pass) gate
+  python3 - "$3" "$4" $2 <<'PY'
+import io, sys
+a, b = sys.argv[1], sys.argv[2]
+paths = sys.argv[3:]
+total = 0
+for p in paths:
+    s = io.open(p, encoding='utf-8').read()
+    total += s.count(a)
+    io.open(p, 'w', encoding='utf-8').write(s.replace(a, b))
+assert total >= 1, f"anchor absent in {paths}"
+PY
+  if "$6" >/dev/null 2>&1; then got=pass; else got=fail; fi
+  git checkout -- . >/dev/null 2>&1
+  cases=$((cases + 1))
+  if [ "$got" != "$5" ]; then
+    echo "TOOTHLESS: $1 -> $got, wanted $5" >&2
+    exit 1
+  fi
+  printf "ok  %-56s (%s)\n" "$1" "$5"
+}
+
 fault() { # name file from to expect(fail|pass) gate
   python3 - "$2" "$3" "$4" <<'PY'
 import io,sys
@@ -95,10 +126,19 @@ fault "refusals: one routed around the funnel, so nobody outside sees it" \
   internal/api/api.go 'refuse(w, http.StatusBadRequest, "invalid_request", "revocation_names_nobody", nil)' 'writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_request"})' \
   fail ./scripts/every-refusal-reaches-the-operator.sh
 
+# The same fault, but in the OTHER file the gate reads: proof that widening
+# the scan to every file under internal/api/ actually widened the CHECKING,
+# not only the counting. Before that widening this case could not exist at
+# all, because xaa.go was invisible to the gate.
+fault "refusals: one routed around the funnel in xaa.go specifically" \
+  internal/api/xaa.go 'refuse(w, http.StatusBadRequest, "unauthorized_client", "xaa_not_configured", nil)' 'writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unauthorized_client"})' \
+  fail ./scripts/every-refusal-reaches-the-operator.sh
+
 # The subject list is DISCOVERED, so a gate that can no longer find a single
 # response must say it measured nothing rather than pass over an empty set.
-fault_all "refusals: the responses it reads are gone" \
-  internal/api/api.go 'writeJSON(' 'writeBody(' \
+# Every file the gate reads, not only api.go: see fault_all_multi, above.
+fault_all_multi "refusals: the responses it reads are gone" \
+  "internal/api/api.go internal/api/xaa.go" 'writeJSON(' 'writeBody(' \
   fail ./scripts/every-refusal-reaches-the-operator.sh
 
 # And it must not fire on a success, which is most of what the surface writes.

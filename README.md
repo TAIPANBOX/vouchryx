@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-103-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-208-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -118,10 +118,11 @@ switch, different axis, and the second is the one an incident needs.
 
 | | |
 |---|---|
-| `POST /v1/token` | RFC 8693 exchange. Input: `subject_token` and `actor_token`, plus a `DPoP` header. Output: a short-lived JWT with nested `act` and `cnf.jkt`. |
+| `POST /v1/token` | RFC 8693 exchange (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`). Input: `subject_token` and `actor_token`, plus a `DPoP` header. Output: a short-lived JWT with nested `act` and `cnf.jkt`. Since 2026-09-24, the same route also runs Cross App Access's jwt-bearer grant (`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`, `assertion=<ID-JAG>`, `client_secret_basic`); see "Cross App Access" below. |
 | `POST /v1/revoke` | By `jti` for one token, or by `subject` for every token naming that agent anywhere in its chain: at this door since 2026-09-17, and at the enforcement points from agent-stack-go#61 and tokenfuse#298 on. `actor` and `reason` are required. A `jti` revocation ends one token, not the ones already exchanged from it. |
 | `GET /v1/revocations` | What enforcement points poll. Carries `as_of`, so an empty list and an unreachable service are not the same answer. |
 | `GET /.well-known/jwks.json` | Public keys, so verification is offline. |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata: this service's own endpoints and grants. Names no trusted issuer and no configured client. |
 
 There is deliberately **no introspection endpoint**. It would put this service
 on the request path of every enforcement point at once, and wardryx runs at a
@@ -142,6 +143,13 @@ VOUCHRYX_TTL_SECONDS      default 300, capped at 3600
 VOUCHRYX_EVENTS_PATH      agent-event NDJSON; unset means nothing is recorded
 VOUCHRYX_REVOCATIONS_PATH revocations kept on disk across a restart; unset,
                           a restart forgets them
+VOUCHRYX_CLIENTS         Cross App Access client table, `client_id|agent://td/path|
+                          sha256:<64 hex>` per line; unset closes the jwt-bearer
+                          grant (unauthorized_client to every call)
+VOUCHRYX_RESOURCES       comma-separated absolute URLs the jwt-bearer grant may
+                          issue for; required once VOUCHRYX_CLIENTS is set
+VOUCHRYX_XAA_REQUIRE_DPOP "true" or "false" (default); requires a DPoP proof on
+                          the jwt-bearer grant when true
 ```
 
 A missing or malformed value **aborts the process** and names the variable. A
@@ -223,6 +231,63 @@ service that refuses for a living is safe: a wrong credential minted there is
 refused here, loudly. Its own tests assert exactly that, by standing up this
 server and requiring it to accept, or refuse, what the client produced.
 
+## Cross App Access
+
+`@claude 2026-09-24`, a decision taken under delegated authority and open to reversal: this service is also a resource authorization server
+for Cross App Access, the pattern an enterprise identity provider uses to let
+one app hand another app proof of who a person is without ever sharing a
+password or a session: RFC 7523's jwt-bearer grant, redeeming an ID-JAG
+(`draft-ietf-oauth-identity-assertion-authz-grant-04`) for a short-lived
+access token scoped to one configured resource. `POST /v1/token` runs it
+beside the existing exchange, on `grant_type`.
+
+Closed by construction: with no `VOUCHRYX_CLIENTS` configured, every call
+answers `unauthorized_client`, and `GET /.well-known/oauth-authorization-server`
+does not advertise the grant at all.
+
+```sh
+# a client's secret, and the digest VOUCHRYX_CLIENTS holds instead of it
+printf '%s' 'xaa-demo-secret' | shasum -a 256
+
+VOUCHRYX_ISSUER=http://127.0.0.1:4310 \
+VOUCHRYX_SIGNING_KEY=signing.pem \
+VOUCHRYX_TRUSTED_ISSUERS="https://idp.local|http://127.0.0.1:4310|idp.jwks.json" \
+VOUCHRYX_CLIENTS="console|agent://acme/console|sha256:ec57e360a7beebe60564bab19e0186a4224a4a44b15461dc139d5130ba6783d7" \
+VOUCHRYX_RESOURCES="https://broker.acme.example/mcp" \
+  ./vouchryx &
+
+./vouchryx-demo xaa -url http://127.0.0.1:4310 \
+  -idp-key idp.pem -kid idp-1 -iss https://idp.local -aud http://127.0.0.1:4310 \
+  -sub alice@acme.example -client-id console -client-secret xaa-demo-secret \
+  -resource https://broker.acme.example/mcp
+```
+
+which prints a token carrying, measured on 2026-09-24:
+
+```json
+{ "iss": "http://127.0.0.1:4310",
+  "sub": "user://idp.local/x-616c6963654061636d652e6578616d706c65",
+  "act": { "sub": "agent://acme/console" },
+  "client_id": "console", "idp_iss": "https://idp.local",
+  "idp_sub": "alice@acme.example",
+  "aud": "https://broker.acme.example/mcp",
+  "iat": 1790221720, "exp": 1790222020,
+  "jti": "nz0kiLKjhkw7-GE7O6MoRQ" }
+```
+
+`sub` is the mapped identity, `user://<lowercase host of the IdP's iss>/<IdP
+sub>`; the IdP's own `alice@acme.example` is hex-encoded behind an `x-`
+prefix because `@` and `.` in that position are outside the safe character
+set this service already uses for a chain entry's path, so the raw value is
+never embedded where a `/` or a stray scheme separator could be read as
+something it is not. `exp - iat` is exactly 300 seconds, the five-minute cap
+set with this grant, regardless of what `VOUCHRYX_TTL_SECONDS` allows the token-exchange
+grant to run for.
+
+A wrong client secret is refused with `401 {"error":"invalid_client"}` and a
+`WWW-Authenticate: Basic` header; the operator's log names the reason
+(`client_auth_failed`), the caller never sees it.
+
 ## Where the crypto lives
 
 **Not here.** Signing, verification, the algorithm allowlist, the DPoP proof
@@ -273,23 +338,35 @@ pick one.
 
 ## Testing
 
-88 tests. Tier T3: these are authorization decisions where a wrong answer is
+165 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;
 nine were caught immediately and one survived.** Closing it is
 `TestATokenIsVerifiedWithTheKeyItNamesAndNoOther`, which moved to
-`agent-stack-go` with the code it guards.
+`agent-stack-go` with the code it guards. Cross App Access (`internal/xaa`)
+planted its own set, named in `CLAUDE.md` invariants 18 to 20; the one
+survivor there is caught only by the happy-path test, not by the one named
+for the credential it breaks, and both are named so the reason is not lost.
 
-Coverage: `revoke` 96.8% (was 95%), `config` 94.0% (was 93%), `api` 84.5% (was
-75%), measured 2026-09-06 with `go test ./internal/<pkg>/... -cover` after
-revocation authorization, scope narrowing and the size/ceiling limits landed.
-The JOSE, DPoP and chain coverage moved with the code to `agent-stack-go`.
+Coverage, measured 2026-09-24 with `go test ./internal/<pkg>/... -cover`
+after Cross App Access landed: `xaa` 95.1% (new: pure functions with no HTTP
+or process boundary to leave untested), `config` 95.9% (was 95.2%), `revoke`
+86.4% (unchanged), `demo` 75.0% (was 70.8%), `api` 84.2% (was 87.5%, the one
+that moved down: `internal/xaa`'s own share of the request path is now
+counted in `xaa`, not here, and a few of `tokenJWTBearer`'s internal
+`server_error` paths, a bad random source, a signing failure, are the same
+kind of practically unreachable branch the exchange handler already leaves
+uncovered). The JOSE, DPoP and chain coverage moved with the code to
+`agent-stack-go`.
 
 ```bash
-go test ./...
-./scripts/the-algorithm-comes-from-the-key.sh
+go test ./... -race
+go vet ./...
+staticcheck ./...
 ./scripts/features-are-bound.sh
+./scripts/readme-numbers.sh
+./scripts/every-refusal-reaches-the-operator.sh
 ./scripts/gates-have-teeth.sh    # needs a clean tree
 ```
 
@@ -338,6 +415,20 @@ Stated here rather than left to be discovered.
   reporting OK on nothing: a gate whose subject is gone must say so, and the
   simplest way to say it is not to have it. The rule it held is an invariant of
   `agent-stack-go` now, with its own gate there.
+- **Cross App Access has not been run against a real identity provider.**
+  `internal/xaa` and `vouchryx-demo xaa` are exercised against tokens this
+  repository's own tests and demo client mint, the same limit the rest of
+  this section already states for the token-exchange grant; open-source
+  Keycloak issues an ID-JAG only experimentally as of this file's own
+  research, and Okta's Cross App Access needs a tenant and an early-access
+  mail nobody has sent yet.
+- **The jti replay cache is in memory, bounded, and a restart forgets it**,
+  the same shape the DPoP replay window already has: for one assertion's
+  lifetime after a restart, a captured ID-JAG could be redeemed once more
+  than it should be.
+- **`client_secret_basic` is the only client authentication method.**
+  `private_key_jwt`, which the MCP extension also names, is not implemented;
+  a client that only supports it cannot use this grant.
 
 ## Licence
 
@@ -350,6 +441,8 @@ Apache-2.0.
 - [x] Revocation by `jti` or by `subject`, with a required actor and reason
 - [x] `vouchryx-demo` ships the client, so the loop is walkable from a shell
 - [x] `stack-up --with-delegation` brings it up in front of the gateway
+- [x] Cross App Access (RFC 7523 jwt-bearer, an ID-JAG in), closed while
+      `VOUCHRYX_CLIENTS` is unset; `vouchryx-demo xaa` walks it from a shell
 - [ ] An upper IdP in the sandbox; the profile mints a demo issuer instead
 - [ ] Rooms in the other repos' shared stack diagram, which still shows seven planes
 
