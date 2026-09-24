@@ -118,7 +118,7 @@ switch, different axis, and the second is the one an incident needs.
 
 | | |
 |---|---|
-| `POST /v1/token` | RFC 8693 exchange (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`). Input: `subject_token` and `actor_token`, plus a `DPoP` header. Output: a short-lived JWT with nested `act` and `cnf.jkt`. Since W3, the same route also runs Cross App Access's jwt-bearer grant (`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`, `assertion=<ID-JAG>`, `client_secret_basic`); see "Cross App Access" below. |
+| `POST /v1/token` | RFC 8693 exchange (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`). Input: `subject_token` and `actor_token`, plus a `DPoP` header. Output: a short-lived JWT with nested `act` and `cnf.jkt`. Since 2026-09-24, the same route also runs Cross App Access's jwt-bearer grant (`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`, `assertion=<ID-JAG>`, `client_secret_basic`); see "Cross App Access" below. |
 | `POST /v1/revoke` | By `jti` for one token, or by `subject` for every token naming that agent anywhere in its chain: at this door since 2026-09-17, and at the enforcement points from agent-stack-go#61 and tokenfuse#298 on. `actor` and `reason` are required. A `jti` revocation ends one token, not the ones already exchanged from it. |
 | `GET /v1/revocations` | What enforcement points poll. Carries `as_of`, so an empty list and an unreachable service are not the same answer. |
 | `GET /.well-known/jwks.json` | Public keys, so verification is offline. |
@@ -233,7 +233,7 @@ server and requiring it to accept, or refuse, what the client produced.
 
 ## Cross App Access
 
-`@decided 2026-09-24`: this service is also a resource authorization server
+`@claude 2026-09-24`, a decision taken under delegated authority and open to reversal: this service is also a resource authorization server
 for Cross App Access, the pattern an enterprise identity provider uses to let
 one app hand another app proof of who a person is without ever sharing a
 password or a session: RFC 7523's jwt-bearer grant, redeeming an ID-JAG
@@ -281,7 +281,7 @@ prefix because `@` and `.` in that position are outside the safe character
 set this service already uses for a chain entry's path, so the raw value is
 never embedded where a `/` or a stray scheme separator could be read as
 something it is not. `exp - iat` is exactly 300 seconds, the five-minute cap
-(D1), regardless of what `VOUCHRYX_TTL_SECONDS` allows the token-exchange
+set with this grant, regardless of what `VOUCHRYX_TTL_SECONDS` allows the token-exchange
 grant to run for.
 
 A wrong client secret is refused with `401 {"error":"invalid_client"}` and a
@@ -344,8 +344,8 @@ silent.
 **Ten mutants were planted in the security paths while that code lived here;
 nine were caught immediately and one survived.** Closing it is
 `TestATokenIsVerifiedWithTheKeyItNamesAndNoOther`, which moved to
-`agent-stack-go` with the code it guards. Cross App Access (`internal/xaa`,
-W3) planted its own set, named in `CLAUDE.md` invariants 18 to 20; the one
+`agent-stack-go` with the code it guards. Cross App Access (`internal/xaa`)
+planted its own set, named in `CLAUDE.md` invariants 18 to 20; the one
 survivor there is caught only by the happy-path test, not by the one named
 for the credential it breaks, and both are named so the reason is not lost.
 

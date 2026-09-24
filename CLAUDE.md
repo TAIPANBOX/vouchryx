@@ -367,7 +367,8 @@ not a convenience.
     and is held by reading. Scenarios: `features/delegation.feature`)*
 
 18. **A jwt-bearer redemption (Cross App Access, `internal/xaa`) is checked in
-    one fixed order, and every refusal is oracle-free.** `@decided 2026-09-24`:
+    one fixed order, and every refusal is oracle-free.** `@claude 2026-09-24`, a
+    decision taken under delegated authority and open to reversal:
     this service is the estate's resource authorization server for an ID-JAG
     (draft-ietf-oauth-identity-assertion-authz-grant-04), because it already
     holds an issuer, a published JWKS, trusted issuers verified with the key
@@ -445,7 +446,7 @@ not a convenience.
 19. **No refresh token is ever issued on this path, its TTL is capped at five
     minutes independently of `VOUCHRYX_TTL_SECONDS`, and its audience is
     always the resource selected, never a value the request supplies on its
-    own.** D1's guardrail, because a long-lived or a self-selected-audience
+    own.** The guardrail set with this grant, because a long-lived or a self-selected-audience
     credential minted from a delegated assertion is the shape this whole
     grant exists to avoid. The token is signed through the same path the
     exchange uses (ES256, `internal/config`'s signing key), carries an `act`
