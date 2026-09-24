@@ -396,3 +396,9 @@ Feature: A delegation that can be proved, and ended
     Given a store holding revocations whose last matching token has expired
     When the service starts
     Then those entries are dropped from the list and from the file
+
+  # @test:TestABadRevocationsPathRefusesToStart
+  Scenario: A revocation store the service cannot write refuses the start
+    Given the store path points where no file can be made
+    When the service starts
+    Then it refuses to start, because a service that cannot keep a revocation must not look healthy

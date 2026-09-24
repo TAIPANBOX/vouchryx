@@ -179,6 +179,34 @@ func TestEveryTruncationEitherLoadsAPrefixOrRefuses(t *testing.T) {
 	}
 }
 
+// VOUCHRYX_REVOCATIONS_PATH naming an existing directory is an operator
+// mistake, not an empty store: a service that read this as "no file yet" and
+// carried on would look healthy while keeping no revocations at all.
+func TestAStorePathThatIsADirectoryRefusesToOpen(t *testing.T) {
+	dir := t.TempDir()
+	asDir := filepath.Join(dir, "revocations-is-a-dir")
+	if err := os.Mkdir(asDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := OpenStore(asDir, time.Now()); err == nil {
+		t.Fatal("a store path that is a directory opened; it must refuse rather than silently keep no revocations")
+	}
+}
+
+// A parent directory that does not exist is the same shape of mistake: this
+// service reads its store path from the environment and does not create
+// directories on the operator's behalf.
+func TestAStorePathInAMissingDirectoryRefusesToOpen(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "does-not-exist")
+	path := filepath.Join(parent, "revocations.ndjson")
+	if _, _, err := OpenStore(path, time.Now()); err == nil {
+		t.Fatal("a store whose parent directory does not exist opened; it must refuse rather than silently keep no revocations")
+	}
+	if _, err := os.Stat(parent); err == nil {
+		t.Fatal("OpenStore created the missing parent directory; it must refuse instead of making one")
+	}
+}
+
 func TestAFailedWriteStopsLaterWritesRatherThanCorruptingTheFile(t *testing.T) {
 	path, now := storePath(t), time.Now()
 	st, _, err := OpenStore(path, now)

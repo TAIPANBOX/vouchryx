@@ -360,6 +360,8 @@ not a convenience.
     `TestADurableRevocationIsOnTheStoreWhenItIsAnswered`,
     `TestTheRecordSaysWhetherARevocationIsDurable`, and the nine store tests in
     `internal/revoke/store_test.go`, one of them a sweep that cuts the file at every
-    byte; mutants M1 to M8 of the plan, each caught; M9, a
-    dropped fsync, survives every test and is held by reading. Scenarios:
-    `features/delegation.feature`)*
+    byte; mutants: the restore loop dropped, the append skipped, expired entries
+    kept, every unreadable line read as torn, a 200 on a refused write, the list
+    entry taken only after the disk, the broken flag never set, an entry naming
+    nobody accepted: each caught by its test; a dropped fsync survives every test
+    and is held by reading. Scenarios: `features/delegation.feature`)*
