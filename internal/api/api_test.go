@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"math/big"
 	"net/http"
@@ -1054,6 +1055,101 @@ func TestEveryRefusalReachesTheOperator(t *testing.T) {
 			// the operator and must not travel back to whoever was refused.
 			if strings.Contains(w.Body.String(), c.reason) {
 				t.Fatalf("the refusal reason reached the caller: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+type failingStore struct{ calls int }
+
+func (f *failingStore) Append(revoke.Entry) error {
+	f.calls++
+	return errors.New("no space left on device")
+}
+
+type recordingStore struct{ got []revoke.Entry }
+
+func (r *recordingStore) Append(e revoke.Entry) error {
+	r.got = append(r.got, e)
+	return nil
+}
+
+// A revocation that could not be written is still a revocation: the list
+// enforces it at once, because dropping it would fail open. What it may not be
+// is a success, because only a durable revocation survives the restart that
+// would otherwise reopen the incident.
+func TestARevocationTheDiskRefusedAnswers503AndStaysInForce(t *testing.T) {
+	s := newStand(t)
+	st := &failingStore{}
+	s.srv.Store = st
+
+	w := s.revoke(t, wellFormedRevocation, revokeTestKey)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a revocation the disk refused answered %d, want 503: %s", w.Code, w.Body)
+	}
+	if st.calls != 1 {
+		t.Fatalf("the store was asked %d times, want 1", st.calls)
+	}
+	if _, ok := s.srv.Revs.Revoked("any", "agent://acme/triage", s.now.Unix(), s.now); !ok {
+		t.Fatal("a revocation the disk refused was dropped from the list; it must stay in force")
+	}
+}
+
+func TestADurableRevocationIsOnTheStoreWhenItIsAnswered(t *testing.T) {
+	s := newStand(t)
+	st := &recordingStore{}
+	s.srv.Store = st
+
+	w := s.revoke(t, wellFormedRevocation, revokeTestKey)
+	if w.Code != http.StatusOK {
+		t.Fatalf("a durable revocation answered %d: %s", w.Code, w.Body)
+	}
+	if len(st.got) != 1 || st.got[0].Subject != "agent://acme/triage" || st.got[0].IssuedBefore != s.now.Unix() {
+		t.Fatalf("the store holds %+v; want the one revocation with its moment", st.got)
+	}
+}
+
+func TestTheRecordSaysWhetherARevocationIsDurable(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		store RevocationStore
+		want  bool
+	}{
+		{"written", &recordingStore{}, true},
+		{"refused", &failingStore{}, false},
+		{"no store", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "events.ndjson")
+			ew, err := event.NewWriter(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ew.Close()
+			s := newStand(t)
+			s.srv.Events = ew
+			s.srv.Store = tc.store
+			s.revoke(t, wellFormedRevocation, revokeTestKey)
+
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var found *event.Event
+			for _, l := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+				e, err := event.Unmarshal([]byte(l))
+				if err != nil {
+					t.Fatalf("a line is not an event: %v", err)
+				}
+				if e.Type == "delegation_revoked" {
+					found = &e
+				}
+			}
+			if found == nil {
+				t.Fatalf("no delegation_revoked event: %s", raw)
+			}
+			if found.Data["durable"] != tc.want {
+				t.Fatalf("durable is %v, want %v", found.Data["durable"], tc.want)
 			}
 		})
 	}
