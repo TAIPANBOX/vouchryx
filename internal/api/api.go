@@ -65,11 +65,19 @@ const Source = "vouchryx"
 // this service ever gets to refuse it on the merits.
 const maxBodyBytes = 64 << 10
 
+// RevocationStore is where a revocation goes before the caller is told it
+// happened. Nil means the operator set no VOUCHRYX_REVOCATIONS_PATH, and the
+// service said at startup that a restart forgets.
+type RevocationStore interface {
+	Append(revoke.Entry) error
+}
+
 // Server holds what the handlers need. Nothing here is mutable except the
 // revocation list and the proof cache, both of which own their own locking.
 type Server struct {
 	Cfg    config.Config
 	Revs   *revoke.List
+	Store  RevocationStore
 	Proofs *delegation.Verifier
 	Events *event.Writer
 	// Now is injected so every time-dependent behaviour is testable without
@@ -533,6 +541,10 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusServiceUnavailable, "temporarily_unavailable", "revocation_list_full", map[string]any{"detail": err.Error()})
 		return
 	}
+	var storeErr error
+	if s.Store != nil {
+		storeErr = s.Store.Append(e)
+	}
 	s.emit("delegation_revoked", body.Subject, nil, map[string]any{
 		"jti":        body.JTI,
 		"subject":    body.Subject,
@@ -540,7 +552,18 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 		"reason":     body.Reason,
 		"expires":    e.Expires,
 		"revoked_by": keyActor,
+		"durable":    s.Store != nil && storeErr == nil,
 	})
+	if storeErr != nil {
+		// In force in this process and not on disk. The list keeps it, because
+		// a revocation that could not be written is still a revocation and
+		// removing it would fail open. The caller is not told success, because
+		// only a durable revocation survives the restart that would reopen the
+		// incident.
+		refuse(w, http.StatusServiceUnavailable, "temporarily_unavailable", "revocation_not_durable",
+			map[string]any{"detail": storeErr.Error()})
+		return
+	}
 	log.Printf("vouchryx: revoked: jti=%q subject=%q actor=%q reason=%q revoked_by=%q",
 		body.JTI, body.Subject, body.Actor, body.Reason, keyActor)
 	writeJSON(w, http.StatusOK, map[string]any{"revoked": true, "expires": e.Expires})

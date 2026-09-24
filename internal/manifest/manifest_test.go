@@ -413,3 +413,140 @@ func TestEveryDeclaredEntryCarriesItsReason(t *testing.T) {
 		}
 	}
 }
+
+// A revocation outlives the process that recorded it. Killed, not stopped
+// politely: SIGKILL gives the process no chance to flush anything, which is
+// what a crash or an out-of-memory kill does.
+func TestARevocationSurvivesARealRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts processes")
+	}
+	_, r := load(t)
+	bin := filepath.Join(t.TempDir(), "vouchryx")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/vouchryx")
+	build.Dir = r
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building: %v\n%s", err, out)
+	}
+	full := workingEnvironment(t, r)
+	full["VOUCHRYX_REVOKE_KEYS"] = "restart-test-key-0123456789"
+	full["VOUCHRYX_REVOCATIONS_PATH"] = filepath.Join(t.TempDir(), "revocations.ndjson")
+	env := []string{}
+	for k, v := range full {
+		env = append(env, k+"="+v)
+	}
+	addr := full["VOUCHRYX_ADDR"]
+	start := func() *exec.Cmd {
+		cmd := exec.Command(bin)
+		cmd.Env = env
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if !waitFor(addr, 10*time.Second) {
+			_ = cmd.Process.Kill()
+			t.Fatalf("the service never listened on %s", addr)
+		}
+		return cmd
+	}
+
+	first := start()
+	body := `{"actor":"user://acme/alice","reason":"credential in a paste","subject":"agent://acme/triage"}`
+	req, err := http.NewRequest("POST", "http://"+addr+"/v1/revoke", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+full["VOUCHRYX_REVOKE_KEYS"])
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the revocation answered %d before the restart", resp.StatusCode)
+	}
+	_ = first.Process.Kill()
+	_ = first.Wait()
+
+	second := start()
+	defer func() { _ = second.Process.Kill(); _ = second.Wait() }()
+	resp, err = http.Get("http://" + addr + "/v1/revocations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got struct {
+		Revocations []struct {
+			Subject string `json:"subject"`
+		} `json:"revocations"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range got.Revocations {
+		if e.Subject == "agent://acme/triage" {
+			return
+		}
+	}
+	t.Fatalf("after a restart the list holds %+v; the revocation made before it is gone", got.Revocations)
+}
+
+// A VOUCHRYX_REVOCATIONS_PATH the service cannot open is the same class of
+// mistake as a missing required variable: a service that logged and carried
+// on would come up unable to keep a revocation and look healthy anyway.
+func TestABadRevocationsPathRefusesToStart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts processes")
+	}
+	m, r := load(t)
+	var svc = m.Components[0]
+	for _, c := range m.Components {
+		if c.Class == "service" {
+			svc = c
+			break
+		}
+	}
+	if svc.Class != "service" {
+		t.Skip("this repository declares no service")
+	}
+
+	bin := filepath.Join(t.TempDir(), "vouchryx")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/vouchryx")
+	build.Dir = r
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building: %v\n%s", err, out)
+	}
+
+	full := workingEnvironment(t, r)
+	full["VOUCHRYX_REVOCATIONS_PATH"] = filepath.Join(t.TempDir(), "does-not-exist", "revocations.ndjson")
+	env := []string{}
+	for k, v := range full {
+		env = append(env, k+"="+v)
+	}
+
+	cmd := exec.Command(bin)
+	cmd.Env = env
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("a bad VOUCHRYX_REVOCATIONS_PATH did not exit with a status: %v", err)
+		}
+		if exit.ExitCode() != svc.Checked.MissingRequiredExitCode {
+			t.Fatalf("a bad VOUCHRYX_REVOCATIONS_PATH exited %d, want %d (components.json's missing_required_exit_code)",
+				exit.ExitCode(), svc.Checked.MissingRequiredExitCode)
+		}
+	case <-time.After(2 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatal("the service is still running with a revocations path it cannot open; " +
+			"it must refuse to start rather than come up unable to keep a revocation")
+	}
+	if waitFor(full["VOUCHRYX_ADDR"], 300*time.Millisecond) {
+		t.Fatal("the service listened despite a revocations path it could not open")
+	}
+}

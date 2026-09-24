@@ -66,6 +66,11 @@ type Config struct {
 	// whoever can reach the port: the thing that ends an agent's authority
 	// must fail closed, never open.
 	RevokeKeys []string
+	// RevocationsPath is where revocations are kept so a restart cannot
+	// un-revoke a token. OPTIONAL, like RevokeKeys, because making it required
+	// would stop every existing bring-up; unset, the service says at startup
+	// that a restart forgets.
+	RevocationsPath string
 }
 
 // DefaultAddr is where this service listens when nothing says otherwise.
@@ -88,11 +93,12 @@ const DefaultAddr = "127.0.0.1:4310"
 // everything.
 func FromEnv() (Config, error) {
 	c := Config{
-		Addr:       env("VOUCHRYX_ADDR", DefaultAddr),
-		Issuer:     os.Getenv("VOUCHRYX_ISSUER"),
-		EventsPath: os.Getenv("VOUCHRYX_EVENTS_PATH"),
-		TTL:        DefaultTTL,
-		RevokeKeys: revokeKeys(os.Getenv("VOUCHRYX_REVOKE_KEYS")),
+		Addr:            env("VOUCHRYX_ADDR", DefaultAddr),
+		Issuer:          os.Getenv("VOUCHRYX_ISSUER"),
+		EventsPath:      os.Getenv("VOUCHRYX_EVENTS_PATH"),
+		TTL:             DefaultTTL,
+		RevokeKeys:      revokeKeys(os.Getenv("VOUCHRYX_REVOKE_KEYS")),
+		RevocationsPath: os.Getenv("VOUCHRYX_REVOCATIONS_PATH"),
 	}
 	if c.Issuer == "" {
 		return c, errors.New("VOUCHRYX_ISSUER is required: it is the `iss` this service puts on every token it mints")

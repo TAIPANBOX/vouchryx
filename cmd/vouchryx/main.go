@@ -14,6 +14,7 @@
 //	VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path` per line
 //	VOUCHRYX_TTL_SECONDS      default 300, capped at one hour
 //	VOUCHRYX_EVENTS_PATH      agent-event NDJSON, optional
+//	VOUCHRYX_REVOCATIONS_PATH where revocations are kept across a restart, optional
 package main
 
 import (
@@ -41,11 +42,39 @@ func main() {
 		os.Exit(2)
 	}
 
+	revs := revoke.New()
 	srv := &api.Server{
 		Cfg:    cfg,
-		Revs:   revoke.New(),
+		Revs:   revs,
 		Proofs: delegation.NewVerifier(),
 		Now:    time.Now,
+	}
+	if cfg.RevocationsPath != "" {
+		st, got, err := revoke.OpenStore(cfg.RevocationsPath, time.Now())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vouchryx: refusing to start: %v\n", err)
+			os.Exit(2)
+		}
+		for _, e := range got.Active {
+			if err := revs.Add(e); err != nil {
+				fmt.Fprintf(os.Stderr, "vouchryx: refusing to start: restoring %s: %v\n", cfg.RevocationsPath, err)
+				os.Exit(2)
+			}
+		}
+		if got.TornTail {
+			log.Printf("vouchryx: discarded a half-written last revocation in %s; no caller was told it was durable",
+				cfg.RevocationsPath)
+		}
+		log.Printf("vouchryx: restored %d active revocation(s) from %s, dropped %d expired",
+			len(got.Active), cfg.RevocationsPath, got.Expired)
+		defer func() { _ = st.Close() }()
+		// Assigned only here, where st is known non-nil: a nil *revoke.Store in
+		// the interface field would make `s.Store != nil` true and the first
+		// revocation would panic.
+		srv.Store = st
+	} else {
+		log.Printf("vouchryx: VOUCHRYX_REVOCATIONS_PATH is unset, so a restart forgets every revocation " +
+			"and a revoked token that has not expired works again")
 	}
 	if cfg.EventsPath != "" {
 		w, err := event.NewWriter(cfg.EventsPath)
