@@ -365,3 +365,129 @@ not a convenience.
     entry taken only after the disk, the broken flag never set, an entry naming
     nobody accepted: each caught by its test; a dropped fsync survives every test
     and is held by reading. Scenarios: `features/delegation.feature`)*
+
+18. **A jwt-bearer redemption (Cross App Access, `internal/xaa`) is checked in
+    one fixed order, and every refusal is oracle-free.** `@decided 2026-09-24`:
+    this service is the estate's resource authorization server for an ID-JAG
+    (draft-ietf-oauth-identity-assertion-authz-grant-04), because it already
+    holds an issuer, a published JWKS, trusted issuers verified with the key
+    their `kid` names (invariant 2), and the revocation list. The order:
+    `client_secret_basic` against `VOUCHRYX_CLIENTS` (a digest compared in
+    constant time, `unauthorized_client` to every call while unset); an
+    optional DPoP proof, checked with the same verifier and `htu` rule as the
+    token-exchange grant, mandatory under `VOUCHRYX_XAA_REQUIRE_DPOP=true`;
+    the assertion's issuer found by its own `iss` and verified with the key
+    its `kid` names, the same trusted-issuer table the exchange grant reads;
+    its header `typ`, exactly `oauth-id-jag+jwt`; its `aud`, exactly
+    `VOUCHRYX_ISSUER` and naming ONE audience only, a string or a
+    single-element array, never an array naming this service alongside
+    another resource authorization server; its `client_id`, equal to the
+    authenticated client; `exp`, `iat`, `jti` and `sub` present (a draft-04
+    REQUIRED claim; without this check an absent or empty `sub` reaches the
+    subject mapping below as `""`, which maps every sub-less assertion from
+    the same issuer onto one shared phantom principal), `iat` not more than
+    60 seconds in the future, `exp` not past, `exp` at most one hour after
+    `iat`; the `jti` not seen before for that issuer (a bounded in-memory
+    cache, pruned at `exp`); the resource, in `VOUCHRYX_RESOURCES` and equal
+    to the request's own `resource` parameter when both are given; the
+    mapped subject's and the client's own agent identity, not revoked
+    (`RevokedAny`, invariant 14's rule, applied here). Every non-success
+    answer is `invalid_client` (with a `WWW-Authenticate: Basic` header),
+    `invalid_grant`, `invalid_target`, `unauthorized_client` or
+    `invalid_request`, never which check failed; the detail goes to the log
+    unconditionally, and to the event stream once a client has
+    authenticated, exactly the two-channel shape invariant 11 already holds
+    for the exchange grant.
+
+    **The subject mapping is injective, and that took a second pass.** Two
+    distinct IdP subjects must never map to the same `user://` principal, or
+    one could act as, and be revoked as, the other. The safe-looking sub
+    `x-41` embeds raw, and the unsafe sub `A` hex-encodes to `41` (its one
+    ASCII byte), so both landed on `user://host/x-41` until anything already
+    starting with `x-` was also routed through the escape branch: a verbatim
+    path never begins with `x-` and an escaped one always does, by
+    construction of which branch produced it, which is what makes the two
+    branches' outputs disjoint rather than merely usually so.
+    *(tests: `TestAnIdJagFromATrustedIdpBecomesAnAccessTokenForItsResource`,
+    `TestAnIdJagForAnotherAudienceIsRefused`,
+    `TestAnAudienceThatIsOnlyAPrefixMatchIsRefused`,
+    `TestAnIdJagAddressedToTwoAudiencesIsRefused`,
+    `TestAnIdJagPresentedByAnotherClientIsRefused`,
+    `TestAnIdJagWithTheWrongTypIsRefused`, `TestAReplayedIdJagIsRefused`,
+    `TestAnIdJagLivingLongerThanAnHourIsRefused`,
+    `TestAnIdJagMissingExpIatOrJtiIsRefused`,
+    `TestAnIdJagWithNoSubjectIsRefused`,
+    `TestAnIdJagWithIatTooFarInTheFutureIsRefused`,
+    `TestAResourceOutsideTheConfiguredSetIsRefused`,
+    `TestARevokedUserGetsNoAccessToken`, `TestARevokedAgentGetsNoAccessToken`,
+    `TestWithNoClientsConfiguredTheGrantRefusesEveryCall`,
+    `TestAWrongClientSecretIsRefused` (both the `internal/xaa` and the
+    `internal/api` one), `TestADPoPProofBindsTheAccessToken`,
+    `TestRequireDPoPRefusesARequestWithoutAProof`,
+    `TestAnOversizedAssertionIsRefused`,
+    `TestAnAssertionWithHugeClaimsWithinTheBodyCapDoesNotPanic`,
+    `TestHostileAssertionsAreRefusedNeverPanic`,
+    `TestTwoIdpSubjectsNeverMapToOnePrincipal` (the `x-41`/`A` pair and a
+    2,000-draw seeded sweep asserting no two distinct inputs share an
+    output); mutants: `typ` unchecked, `aud` compared by prefix rather than
+    exactly, `aud` array accepted when it merely CONTAINS the issuer rather
+    than naming only it, `client_id` unchecked, `sub` unchecked, the replay
+    cache skipped, the resource set skipped, the revocation check skipped,
+    `VOUCHRYX_XAA_REQUIRE_DPOP` ignored, the one-hour lifetime cap removed,
+    the `x-`-prefix escape condition dropped from `MapSubject` (reopens the
+    `x-41`/`A` collision), each caught by a named test; the client secret
+    compared on the raw string rather than its digest is caught only by the
+    HAPPY-PATH test, not by `TestAWrongClientSecretIsRefused`, because a
+    comparison that is simply wrong in that direction refuses every secret,
+    correct or not, and a test that only tries a wrong one cannot tell that
+    apart from working. Scenarios: `features/xaa.feature`)*
+
+19. **No refresh token is ever issued on this path, its TTL is capped at five
+    minutes independently of `VOUCHRYX_TTL_SECONDS`, and its audience is
+    always the resource selected, never a value the request supplies on its
+    own.** D1's guardrail, because a long-lived or a self-selected-audience
+    credential minted from a delegated assertion is the shape this whole
+    grant exists to avoid. The token is signed through the same path the
+    exchange uses (ES256, `internal/config`'s signing key), carries an `act`
+    naming only the client's own agent identity, and its lifetime is
+    `min(VOUCHRYX_TTL_SECONDS, 300s)`, so a longer exchange TTL never reaches
+    this grant. *(tests: `TestNoRefreshTokenIsIssued`,
+    `TestTheIssuedTokenIsCappedAtFiveMinutesRegardlessOfTheConfiguredTTL`
+    (configures a one-hour TTL specifically, because the default TTL already
+    equals the cap and could not otherwise tell a missing cap from a working
+    one); mutant: a refresh token added to the response, caught by
+    `TestNoRefreshTokenIsIssued`. Scenarios: `features/xaa.feature`)*
+
+20. **A Cross App Access client's secret is held only as a digest, and the
+    grant is closed by construction while none is configured.**
+    `VOUCHRYX_CLIENTS` lines are `client_id|agent://td/path|sha256:<64 hex>`;
+    the plaintext secret is never written to this process's memory past the
+    one comparison that authenticates a request, and the comparison is
+    constant-time. A malformed line, a non-agent identity, a malformed
+    digest, or a duplicate `client_id` refuses the START, the same
+    "malformed is not well-formed" discipline invariant 16 already holds for
+    `VOUCHRYX_TTL_SECONDS`: a client table this process cannot fully read may
+    be hiding a client an operator believes is configured correctly.
+    `VOUCHRYX_RESOURCES` is required the moment `VOUCHRYX_CLIENTS` names at
+    least one client, refused otherwise, because a grant with clients but no
+    resource to issue for would verify an assertion and then have nothing to
+    name as its `aud`. `VOUCHRYX_XAA_REQUIRE_DPOP` accepts only `"true"` or
+    `"false"`, any other value refuses the start.
+    *(tests: `TestAWellFormedClientTableParses`, `TestAWrongClientSecretIsRefused`,
+    `TestAMalformedClientsLineIsRefused`, `TestAMalformedClientsLineRefusesToStart`,
+    `TestAClientsLineNamingANonAgentIdentityIsRefused`,
+    `TestAClientsLineWithABadDigestIsRefused`,
+    `TestADuplicateClientIdRefusesTheWholeTable`,
+    `TestAuthenticateOnANilTableNeverPanics`,
+    `TestWithNoClientsConfiguredXAAClientsIsNil`,
+    `TestWithNoClientsConfiguredTheGrantRefusesEveryCall`,
+    `TestClientsConfiguredWithNoResourcesRefusesToStart`,
+    `TestAWellFormedClientsAndResourcesConfigComesUp`,
+    `TestANonAbsoluteResourceRefusesToStart`,
+    `TestABadRequireDPoPValueRefusesToStart`,
+    `TestRequireDPoPTrueAndFalseAndUnsetAreAllAccepted`; mutant: the secret
+    compared on the raw string instead of its digest, a survivor against
+    `TestAWrongClientSecretIsRefused` alone and caught only by the happy-path
+    test, named again here because it is the same mutant invariant 18 names,
+    against the config-parsing half rather than the request-handling half.
+    Scenarios: `features/xaa.feature`)*

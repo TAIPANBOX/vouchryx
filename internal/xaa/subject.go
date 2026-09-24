@@ -22,7 +22,22 @@ var safeUserPath = regexp.MustCompile(`^[a-z0-9._/-]+$`)
 // MapSubject turns an ID-JAG's issuer and subject into the user:// identity
 // this service's chain, revocation list and events use: user://<lowercase
 // host of the IdP iss>/<IdP sub>, with the IdP sub hex-encoded behind an "x-"
-// prefix whenever embedding it raw would not be a well-formed entry.
+// prefix whenever embedding it raw would not be a well-formed entry, OR
+// whenever it already starts with "x-".
+//
+// # Injectivity is the whole point of the second condition
+//
+// Without it, two distinct IdP subjects could map to the same principal: the
+// safe-looking sub "x-41" embeds raw as "x-41", and the unsafe sub "A"
+// hex-encodes to "41" (its one ASCII byte), landing on the same "x-41". One
+// principal for two people means either can act as, and be revoked as, the
+// other. Escaping anything already starting with "x-" too makes the split
+// exhaustive rather than merely likely: a verbatim (raw) path never begins
+// with "x-", and an escaped path always does, by construction of which
+// branch below produced it, so the two can never collide with each other.
+// Two subs raw-embedded are distinct because embedding is the identity
+// function; two subs escaped are distinct because hex encoding is injective.
+// Neither argument depends on what the bytes happen to be.
 //
 // The result is checked against agent-stack-go's own chain validation
 // (github.com/TAIPANBOX/agent-stack-go/chain, the same grammar
@@ -40,7 +55,7 @@ func MapSubject(idpIss, idpSub string) (string, error) {
 		return "", err
 	}
 	path := idpSub
-	if path == "" || !safeUserPath.MatchString(path) {
+	if path == "" || strings.HasPrefix(path, "x-") || !safeUserPath.MatchString(path) {
 		path = "x-" + hex.EncodeToString([]byte(idpSub))
 	}
 	candidate := "user://" + host + "/" + path

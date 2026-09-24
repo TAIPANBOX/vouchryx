@@ -197,6 +197,55 @@ func TestAnIdJagMissingExpIatOrJtiIsRefused(t *testing.T) {
 	}
 }
 
+// draft-04 section 3 makes `sub` REQUIRED. Without this check an absent or
+// empty sub reaches MapSubject as "", which maps to a single phantom
+// principal ("user://<host>/x-") that every sub-less assertion from that
+// issuer would share: one identity standing in for however many distinct
+// people the IdP never actually named.
+func TestAnIdJagWithNoSubjectIsRefused(t *testing.T) {
+	idp := genKey(t)
+	now := time.Now()
+	for name, over := range map[string]map[string]any{
+		"absent":       {"sub": nil},
+		"empty string": {"sub": ""},
+		"not a string": {"sub": 12345},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tok := mint(t, idp, idjagHeader(nil), idjagClaims(now, over))
+			if _, err := VerifyIDJAG(tok, testOurIssuer, testClientID, findFor(testIdpIss, idp), NewReplayCache(), now); !errors.Is(err, ErrMissingClaims) {
+				t.Fatalf("%s: got %v, want ErrMissingClaims", name, err)
+			}
+		})
+	}
+}
+
+// draft-04 names ONE audience, the resource authorization server's issuer,
+// and each RAS keeps its own replay cache: an assertion addressed to two of
+// them could be redeemed once at each, which is a replay by another name.
+func TestAnIdJagAddressedToTwoAudiencesIsRefused(t *testing.T) {
+	idp := genKey(t)
+	now := time.Now()
+	for name, aud := range map[string]any{
+		"two-element array":                  []any{testOurIssuer, "https://another-ras.example"},
+		"this one plus another, other order": []any{"https://another-ras.example", testOurIssuer},
+		"single-element array is still fine": []any{testOurIssuer},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tok := mint(t, idp, idjagHeader(nil), idjagClaims(now, map[string]any{"aud": aud}))
+			_, err := VerifyIDJAG(tok, testOurIssuer, testClientID, findFor(testIdpIss, idp), NewReplayCache(), now)
+			if name == "single-element array is still fine" {
+				if err != nil {
+					t.Fatalf("a single-element array naming only this service was refused: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrWrongAudience) {
+				t.Fatalf("%s: got %v, want ErrWrongAudience", name, err)
+			}
+		})
+	}
+}
+
 func TestAnIdJagWithIatTooFarInTheFutureIsRefused(t *testing.T) {
 	idp := genKey(t)
 	now := time.Now()

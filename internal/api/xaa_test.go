@@ -388,6 +388,66 @@ func TestRequireDPoPRefusesARequestWithoutAProof(t *testing.T) {
 	}
 }
 
+// D1's guardrail: at most five minutes, regardless of how long
+// VOUCHRYX_TTL_SECONDS lets the token-exchange grant run. The default TTL
+// already equals the cap, so a test using it could not tell a missing cap
+// from a working one; this configures a longer TTL specifically to make the
+// cap the only thing that could produce a five-minute token.
+func TestTheIssuedTokenIsCappedAtFiveMinutesRegardlessOfTheConfiguredTTL(t *testing.T) {
+	s := newXAAStand(t)
+	s.srv.Cfg.TTL = time.Hour
+	assertion := s.mintIDJAG(t, nil)
+	w, body := s.redeemXAA(t, xaaClientID, xaaClientSecret, assertion, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("setup: %d %s", w.Code, w.Body)
+	}
+	expiresIn, ok := body["expires_in"].(float64)
+	if !ok || expiresIn > 300 {
+		t.Fatalf("expires_in is %v, want at most 300 despite a configured TTL of one hour", body["expires_in"])
+	}
+	claims, err := delegation.VerifyToken(body["access_token"].(string), s.srv.Cfg.PublicSet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iat, _ := claims["iat"].(float64)
+	exp, _ := claims["exp"].(float64)
+	if exp-iat > 300 {
+		t.Fatalf("exp-iat is %v seconds, want at most 300", exp-iat)
+	}
+}
+
+// The body cap (maxBodyBytes, shared with the token-exchange grant) applies
+// before ParseForm ever sees the assertion field, so an assertion this large
+// never reaches internal/xaa at all.
+func TestAnOversizedAssertionIsRefused(t *testing.T) {
+	s := newXAAStand(t)
+	huge := s.mintIDJAG(t, map[string]any{"padding": strings.Repeat("a", 70<<10)})
+	w, _ := s.redeemXAA(t, xaaClientID, xaaClientSecret, huge, nil)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("an oversized assertion got %d, want 413: %s", w.Code, w.Body)
+	}
+}
+
+// A claims section that is large but still comfortably within the 64KiB body
+// cap must not panic and must be judged on the merits: an unrecognised extra
+// claim is not itself a reason to refuse.
+func TestAnAssertionWithHugeClaimsWithinTheBodyCapDoesNotPanic(t *testing.T) {
+	s := newXAAStand(t)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("a large-but-in-cap assertion panicked: %v", r)
+		}
+	}()
+	assertion := s.mintIDJAG(t, map[string]any{"padding": strings.Repeat("a", 20_000)})
+	w, body := s.redeemXAA(t, xaaClientID, xaaClientSecret, assertion, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("a large-but-well-formed assertion was refused: %d %s", w.Code, w.Body)
+	}
+	if body["access_token"] == "" || body["access_token"] == nil {
+		t.Fatalf("no access_token: %v", body)
+	}
+}
+
 // The existing token-exchange grant must answer exactly as it always has:
 // this is the same round trip TestAnExchangeIssuesATokenBoundToTheProofsKeyWithTheChainTheRightWayRound
 // already proves, repeated here as the regression that guards the token/

@@ -97,7 +97,13 @@ func VerifyIDJAG(assertion, expectedAud, clientID string, find FindIssuerFunc, r
 	iat, iatOK := asUnix(claims["iat"])
 	exp, expOK := asUnix(claims["exp"])
 	jti, _ := claims["jti"].(string)
-	if !iatOK || !expOK || jti == "" {
+	// sub is REQUIRED (draft-04 section 3). Without this an absent or empty
+	// sub reaches MapSubject as "", which maps every sub-less assertion from
+	// the same issuer onto the identical phantom principal
+	// user://<host>/x-, one identity standing in for however many distinct
+	// people the IdP never actually named.
+	sub, subOK := claims["sub"].(string)
+	if !iatOK || !expOK || jti == "" || !subOK || sub == "" {
 		return Assertion{}, ErrMissingClaims
 	}
 	if time.Unix(iat, 0).After(now.Add(MaxSkew)) {
@@ -113,7 +119,6 @@ func VerifyIDJAG(assertion, expectedAud, clientID string, find FindIssuerFunc, r
 		return Assertion{}, err
 	}
 
-	sub, _ := claims["sub"].(string)
 	resource, _ := claims["resource"].(string)
 	scope, _ := claims["scope"].(string)
 	return Assertion{
@@ -179,20 +184,25 @@ func jwsPart(token string, n int) ([]byte, error) {
 	return raw, nil
 }
 
-// audienceMatches mirrors internal/api's own helper of the same name (aud may
-// be a single string or a JSON array of strings per RFC 7519); duplicated
-// rather than imported because internal/api imports this package and not the
-// other way round.
+// audienceMatches is deliberately STRICTER than internal/api's own helper of
+// the same name, which accepts an array containing want among others: this
+// module is checking an ID-JAG's own aud, which draft-04 defines as ONE
+// audience, the resource authorization server's issuer, not a set it may
+// belong to. Each RAS keeps its own replay cache, so an assertion addressed
+// to two of them could be redeemed once at each, which is a replay by
+// another name. A single-element array naming exactly want is accepted,
+// since RFC 7519 allows aud to be an array of one; more than one element is
+// refused regardless of whether want is among them.
 func audienceMatches(aud any, want string) bool {
 	switch v := aud.(type) {
 	case string:
 		return v == want
 	case []any:
-		for _, one := range v {
-			if s, ok := one.(string); ok && s == want {
-				return true
-			}
+		if len(v) != 1 {
+			return false
 		}
+		s, ok := v[0].(string)
+		return ok && s == want
 	}
 	return false
 }

@@ -108,6 +108,45 @@ func TestEveryIdpSubjectMapsToAValidUserEntry(t *testing.T) {
 	}
 }
 
+// MapSubject must be injective for a fixed issuer: two distinct IdP subjects
+// must never map to the same principal, or one could act as, and be revoked
+// as, the other. A safe-looking sub that already starts with "x-" (the
+// escape prefix itself) is the trap: "x-41" embeds raw, and the unsafe sub
+// "A" hex-encodes to "41", so both landed on "user://host/x-41" before this
+// was fixed by escaping anything already starting with "x-" too, so a
+// verbatim path never begins with "x-" and every escaped one always does.
+func TestTwoIdpSubjectsNeverMapToOnePrincipal(t *testing.T) {
+	const iss = "https://idp.acme.example"
+	got1, err := MapSubject(iss, "A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, err := MapSubject(iss, "x-41")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got1 == got2 {
+		t.Fatalf(`"A" and "x-41" both mapped to %q`, got1)
+	}
+
+	seen := make(map[string]string, 2000)
+	rng := rand.New(rand.NewSource(1))
+	for i := 0; i < 2000; i++ {
+		n := rng.Intn(40)
+		raw := make([]byte, n)
+		_, _ = rng.Read(raw)
+		sub := string(raw)
+		mapped, err := MapSubject(iss, sub)
+		if err != nil {
+			continue
+		}
+		if prior, ok := seen[mapped]; ok && prior != sub {
+			t.Fatalf("both %q and %q mapped to %q", prior, sub, mapped)
+		}
+		seen[mapped] = sub
+	}
+}
+
 func TestMapSubjectNeverCollidesTwoDifferentSafeSubsIntoTheSameEntry(t *testing.T) {
 	seen := map[string]string{}
 	for i := 0; i < 50; i++ {
