@@ -492,3 +492,26 @@ not a convenience.
     test, named again here because it is the same mutant invariant 18 names,
     against the config-parsing half rather than the request-handling half.
     Scenarios: `features/xaa.feature`)*
+
+## Distribution
+
+Published as a container image, `ghcr.io/taipanbox/vouchryx`, built by
+`.github/workflows/release.yml` on a `v*` tag push: static, distroless,
+non-root, `linux/amd64` and `linux/arm64` built natively and merged by digest,
+signed keyless with cosign, an SBOM and a build-provenance attestation
+attached. No tag has been cut yet (`components.json`'s `distribution` field
+says so plainly); until one is, this is still built from source, the same as
+every deployment before this file's own change added the image.
+
+**Every base image in `Dockerfile` is pinned by digest, never by a tag
+alone.** A tag can move under an operator without anyone choosing that; a
+digest cannot, and pinning only the published image while its own inputs
+float would sign a build without pinning what went into it. *(gate:
+`scripts/base-images-pinned-by-digest.sh`; 2 cases in `gates-have-teeth.sh`)*
+
+The version a binary reports (`main.version` in both `cmd/vouchryx` and
+`cmd/vouchryx-demo`, `"dev"` unless overridden) is stamped at build time via
+`-ldflags`, from the `VERSION` build-arg the release workflow sets to the tag
+name; `vouchryx` logs it once at startup, `vouchryx-demo version` prints it.
+This is a diagnostic, not a security property, exactly like the rest of
+`vouchryx-demo` (see "What this is" and the demo tool's own doc comment).

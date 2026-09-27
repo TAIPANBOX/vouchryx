@@ -146,6 +146,16 @@ fault "refusals: a success response moved" \
   internal/api/api.go 'writeJSON(w, http.StatusOK, s.Cfg.PublicSet())' 'writeJSON(w, http.StatusOK, s.Cfg.PublicSet()) //nolint' \
   pass ./scripts/every-refusal-reaches-the-operator.sh
 
+fault "base images: a FROM loses its digest and falls back to a moving tag" \
+  Dockerfile 'golang@sha256:3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244' 'golang:1.27' \
+  fail ./scripts/base-images-pinned-by-digest.sh
+
+# And it must not fire on an unrelated Dockerfile edit that leaves both FROM
+# lines pinned exactly as they were.
+fault "base images: an unrelated label changes, digests untouched" \
+  Dockerfile 'org.opencontainers.image.title="vouchryx"' 'org.opencontainers.image.title="vouchryx" ' \
+  pass ./scripts/base-images-pinned-by-digest.sh
+
 # --- every gate in scripts/ has a case here ---------------------------------
 #
 # This file is a hand-written list of cases, which is the shape that goes stale

@@ -43,6 +43,8 @@ jobs:
         run: ./scripts/readme-numbers.sh
       - name: every refusal reaches the operator
         run: ./scripts/every-refusal-reaches-the-operator.sh
+      - name: the Dockerfile's base images are pinned by digest
+        run: ./scripts/base-images-pinned-by-digest.sh
       - name: the gates have teeth
         run: ./scripts/gates-have-teeth.sh
 

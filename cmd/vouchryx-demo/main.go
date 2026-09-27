@@ -31,6 +31,12 @@ import (
 	"github.com/TAIPANBOX/vouchryx/internal/demo"
 )
 
+// version is overridden at build time via -ldflags (see Dockerfile). This
+// tool proves nothing about the service (CLAUDE.md, "vouchryx-demo proves
+// nothing on its own"); the version is here so a bug report can name which
+// build of the demo client minted a given request, not as a security property.
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -46,6 +52,9 @@ func main() {
 		err = proof(os.Args[2:])
 	case "xaa":
 		err = xaaCmd(os.Args[2:])
+	case "version":
+		fmt.Println("vouchryx-demo", version)
+		return
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -91,6 +100,9 @@ func usage() {
       and redeems it at POST /v1/token (grant_type
       urn:ietf:params:oauth:grant-type:jwt-bearer), authenticating with
       client_secret_basic, and prints the issued access token.
+
+  version
+      Prints the build version (see the Dockerfile's VERSION build-arg).
 `)
 }
 
