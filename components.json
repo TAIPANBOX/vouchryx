@@ -19,7 +19,7 @@
   ],
   "schema": "taipanbox.dev/components/v1",
   "repo": "TAIPANBOX/vouchryx",
-  "distribution": "ghcr.io/taipanbox/vouchryx, published by .github/workflows/release.yml on a v* tag push (linux/amd64 and linux/arm64, signed keyless with cosign, SBOM and build-provenance attestation attached); no tag has been cut yet, so today this is still built from source, the delegation token issuer and revocation list the stack launchers build in",
+  "distribution": "ghcr.io/taipanbox/vouchryx, published by .github/workflows/release.yml on a v* tag push (linux/amd64 and linux/arm64, signed keyless with cosign, SBOM and build-provenance attestation attached); first tag v0.1.0, the delegation token issuer and revocation list the stack launchers run",
   "components": [
     {
       "name": "vouchryx",

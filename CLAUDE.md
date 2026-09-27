@@ -499,9 +499,7 @@ Published as a container image, `ghcr.io/taipanbox/vouchryx`, built by
 `.github/workflows/release.yml` on a `v*` tag push: static, distroless,
 non-root, `linux/amd64` and `linux/arm64` built natively and merged by digest,
 signed keyless with cosign, an SBOM and a build-provenance attestation
-attached. No tag has been cut yet (`components.json`'s `distribution` field
-says so plainly); until one is, this is still built from source, the same as
-every deployment before this file's own change added the image.
+attached. The first tag was v0.1.0 (2026-09-27).
 
 **Every base image in `Dockerfile` is pinned by digest, never by a tag
 alone.** A tag can move under an operator without anyone choosing that; a
