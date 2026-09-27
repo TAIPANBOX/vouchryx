@@ -136,7 +136,7 @@ keyless and carrying an SBOM and a provenance attestation), or build from
 source.
 
 ```sh
-docker pull ghcr.io/taipanbox/vouchryx:<tag>   # replace <tag> with the release to run, e.g. v1.0.0
+docker pull ghcr.io/taipanbox/vouchryx:v0.1.0
 
 docker run --rm -p 4310:4310 \
   -e VOUCHRYX_ADDR=0.0.0.0:4310 \
@@ -144,7 +144,7 @@ docker run --rm -p 4310:4310 \
   -e VOUCHRYX_SIGNING_KEY=/keys/signing.pem \
   -e VOUCHRYX_TRUSTED_ISSUERS='https://idp.example.com|https://vouchryx.example.com|/keys/idp.jwks.json' \
   -v "$(pwd)/keys":/keys:ro \
-  ghcr.io/taipanbox/vouchryx:<tag>
+  ghcr.io/taipanbox/vouchryx:v0.1.0
 ```
 
 The three required variables are `VOUCHRYX_ISSUER`, `VOUCHRYX_SIGNING_KEY` and
@@ -162,9 +162,7 @@ go build -o vouchryx ./cmd/vouchryx
 go build -o vouchryx-demo ./cmd/vouchryx-demo
 ```
 
-No tag has been cut yet (`components.json`'s `distribution` field says so);
-this section's `<tag>` placeholder is for the maintainer to fill in the day
-one is.
+The first tagged release is v0.1.0; later tags are listed on the Releases page.
 
 ### Verify the image
 
@@ -173,10 +171,10 @@ attestation and an SBOM, from the first tag on. With `cosign` and `gh`
 installed:
 
 ```sh
-cosign verify ghcr.io/taipanbox/vouchryx:<tag> \
+cosign verify ghcr.io/taipanbox/vouchryx:v0.1.0 \
   --certificate-identity-regexp '^https://github.com/TAIPANBOX/vouchryx/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-gh attestation verify oci://ghcr.io/taipanbox/vouchryx:<tag> -R TAIPANBOX/vouchryx
+gh attestation verify oci://ghcr.io/taipanbox/vouchryx:v0.1.0 -R TAIPANBOX/vouchryx
 ```
 
 ## Configuration
