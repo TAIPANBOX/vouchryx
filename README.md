@@ -130,7 +130,7 @@ on the request path of every enforcement point at once, and wardryx runs at a
 
 ## Install
 
-Pull the published image (`ghcr.io/taipanbox/vouchryx`, built for
+Pull the published image (`ghcr.io/taipanbox/vouchryx:v0.1.0`, built for
 `linux/amd64` and `linux/arm64` by `.github/workflows/release.yml`, signed
 keyless and carrying an SBOM and a provenance attestation), or build from
 source.
