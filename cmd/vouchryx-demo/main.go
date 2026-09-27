@@ -62,9 +62,13 @@ func usage() {
 	fmt.Fprint(os.Stderr, `vouchryx-demo mints what a caller of this service needs.
 
   keygen   -out <prefix> [-kid <kid>]
-      Writes <prefix>.pem (private, mode 600) and <prefix>.jwks.json (public).
-      The JWKS is what VOUCHRYX_TRUSTED_ISSUERS and TOKENFUSE_DELEGATION_JWKS
-      take.
+      Writes <prefix>.pem (private, mode 600) and <prefix>.jwks.json (public),
+      for a demo IdP key: this is what VOUCHRYX_TRUSTED_ISSUERS takes, to
+      trust the tokens minted with -idp-key below. It is not vouchryx's own
+      signing key: a gateway verifying tokens vouchryx ISSUES
+      (TOKENFUSE_DELEGATION_JWKS) needs the JWKS vouchryx itself serves at
+      GET /.well-known/jwks.json, keyed by that key's own thumbprint, not
+      this file.
 
   exchange -url <vouchryx-origin> -idp-key <pem> -kid <kid>
            -iss <issuer> -aud <audience>

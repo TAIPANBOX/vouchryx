@@ -106,7 +106,10 @@ func ReadKey(path string) (*ecdsa.PrivateKey, error) {
 }
 
 // WriteJWKS writes the PUBLIC half as a JWK Set an operator can hand to
-// VOUCHRYX_TRUSTED_ISSUERS or to TOKENFUSE_DELEGATION_JWKS.
+// VOUCHRYX_TRUSTED_ISSUERS, to trust a demo IdP key. It is not vouchryx's own
+// signing key, so it is not what TOKENFUSE_DELEGATION_JWKS wants: a gateway
+// verifying tokens vouchryx itself issues needs the JWKS vouchryx serves at
+// GET /.well-known/jwks.json, keyed by that key's own thumbprint.
 //
 // kid must not be empty: this service matches a token to the key it names and
 // refuses to try every key in turn, so a set with an unnamed key is one it

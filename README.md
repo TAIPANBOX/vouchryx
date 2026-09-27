@@ -300,6 +300,19 @@ crate, offline, from a configured issuer and JWKS) when an operator turns
 that on, and nowhere else yet. Wardryx reads a `chain_proven` fact a door
 established; it does not verify a token itself.
 
+Measured 2026-09-27 end to end, on a lab image built from this repository's
+`main` and run in a three-node cluster: with the gateway's delegation door on
+(polling `GET /v1/revocations` once a second) and a wardryx policy denying an
+unproven chain, a claimed delegation with no token was refused, and a chain
+proved by a token exchanged through `vouchryx-demo exchange` plus a fresh
+`vouchryx-demo proof` per call answered three real model calls. Revoking the
+subject took effect between the two: a call 0.9 seconds after the revocation
+still answered, and one 2.2 seconds after, and every one afterward, was
+refused. Verifying this needs the gateway configured with the JWKS this
+service itself serves at `GET /.well-known/jwks.json`, never the JWKS a
+`vouchryx-demo keygen` file writes for a demo IdP key: the two are different
+keys, and pointing the gateway at the wrong one refuses every token.
+
 That is not tidiness. Two implementations of "is this signature valid" that
 disagree is a hole nobody sees until somebody walks through it, and the issuer
 having its own copy is the worst arrangement available: the one process that
