@@ -23,9 +23,9 @@
 # `docker buildx build`, or drop the `--platform=` from the line below and
 # lose only the cross-compile (arm64 then builds under emulation).
 #
-# Measured 2026-09-27: `docker build` (buildx, native arch) succeeded for both
-# `linux/amd64` and `linux/arm64`, and the amd64 image ran `vouchryx` and
-# `vouchryx-demo` correctly under QEMU.
+# Measured 2026-09-27: `docker buildx build --platform linux/amd64,linux/arm64`
+# succeeded, and the native-arch image ran `vouchryx` (healthz 200, a
+# public-only JWKS, exit 2 with no config) and `vouchryx-demo` correctly.
 
 FROM --platform=$BUILDPLATFORM golang@sha256:3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244 AS build
 ENV GOTOOLCHAIN=auto
