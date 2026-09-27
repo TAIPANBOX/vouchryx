@@ -36,6 +36,9 @@ import (
 	"github.com/TAIPANBOX/vouchryx/internal/xaa"
 )
 
+// version is overridden at build time via -ldflags (see Dockerfile).
+var version = "dev"
+
 func main() {
 	cfg, err := config.FromEnv()
 	if err != nil {
@@ -108,8 +111,8 @@ func main() {
 	if warn := bindWarning(cfg.Addr); warn != "" {
 		log.Printf("vouchryx: %s", warn)
 	}
-	log.Printf("vouchryx: listening on %s, issuing as %s, trusting %d issuer(s), ttl %v",
-		cfg.Addr, cfg.Issuer, len(cfg.Trusted), cfg.TTL)
+	log.Printf("vouchryx: version %s, listening on %s, issuing as %s, trusting %d issuer(s), ttl %v",
+		version, cfg.Addr, cfg.Issuer, len(cfg.Trusted), cfg.TTL)
 
 	server := &http.Server{
 		Addr:              cfg.Addr,

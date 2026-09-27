@@ -128,6 +128,57 @@ There is deliberately **no introspection endpoint**. It would put this service
 on the request path of every enforcement point at once, and wardryx runs at a
 3.2 ms p50.
 
+## Install
+
+Pull the published image (`ghcr.io/taipanbox/vouchryx`, built for
+`linux/amd64` and `linux/arm64` by `.github/workflows/release.yml`, signed
+keyless and carrying an SBOM and a provenance attestation), or build from
+source.
+
+```sh
+docker pull ghcr.io/taipanbox/vouchryx:<tag>   # replace <tag> with the release to run, e.g. v1.0.0
+
+docker run --rm -p 4310:4310 \
+  -e VOUCHRYX_ADDR=0.0.0.0:4310 \
+  -e VOUCHRYX_ISSUER=https://vouchryx.example.com \
+  -e VOUCHRYX_SIGNING_KEY=/keys/signing.pem \
+  -e VOUCHRYX_TRUSTED_ISSUERS='https://idp.example.com|https://vouchryx.example.com|/keys/idp.jwks.json' \
+  -v "$(pwd)/keys":/keys:ro \
+  ghcr.io/taipanbox/vouchryx:<tag>
+```
+
+The three required variables are `VOUCHRYX_ISSUER`, `VOUCHRYX_SIGNING_KEY` and
+`VOUCHRYX_TRUSTED_ISSUERS` (see Configuration, below); a missing one aborts the
+process, exit code 2, before it binds a socket. `vouchryx-demo` ships in the
+same image; reach it with `docker run --entrypoint vouchryx-demo ...` instead.
+The image itself binds `127.0.0.1:4310` by default, same as the binary; a
+launcher that wants it reachable from outside the container sets
+`VOUCHRYX_ADDR=0.0.0.0:4310` itself, as the example above does.
+
+Or build from source (Go 1.27+):
+
+```sh
+go build -o vouchryx ./cmd/vouchryx
+go build -o vouchryx-demo ./cmd/vouchryx-demo
+```
+
+No tag has been cut yet (`components.json`'s `distribution` field says so);
+this section's `<tag>` placeholder is for the maintainer to fill in the day
+one is.
+
+### Verify the image
+
+Every image is signed keyless with Sigstore and carries a build-provenance
+attestation and an SBOM, from the first tag on. With `cosign` and `gh`
+installed:
+
+```sh
+cosign verify ghcr.io/taipanbox/vouchryx:<tag> \
+  --certificate-identity-regexp '^https://github.com/TAIPANBOX/vouchryx/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify oci://ghcr.io/taipanbox/vouchryx:<tag> -R TAIPANBOX/vouchryx
+```
+
 ## Configuration
 
 Every value is required except the first, and none has a permissive default.
