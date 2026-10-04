@@ -1,7 +1,9 @@
 package revoke
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -170,5 +172,44 @@ func TestRevokedAnyMatchesAPartyAtAnyPosition(t *testing.T) {
 	}
 	if _, ok := l.RevokedAny("tok-y", nil, now.Unix(), now); !ok {
 		t.Fatal("a jti entry was not found with no parties at all")
+	}
+}
+
+// The public form is the entry minus its audit half, and is never nil: an
+// empty list has to marshal as `[]`, because both consumers refuse a body whose
+// `revocations` is null. The same bytes are asserted end to end through the
+// HTTP handler in internal/api; this holds the conversion on its own.
+func TestThePublicFormDropsTheAuditHalfAndIsNeverNil(t *testing.T) {
+	full := []Entry{
+		{JTI: "tok-1", Expires: 100, Actor: "user://a/b", Reason: "seen in a log"},
+		{Subject: "agent://a/one", IssuedBefore: 50, Expires: 200, Actor: "user://a/c", Reason: "compromised"},
+	}
+	raw, err := json.Marshal(Public(full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `[{"jti":"tok-1","expires":100},{"subject":"agent://a/one","issued_before":50,"expires":200}]`
+	if string(raw) != want {
+		t.Fatalf("the public form is\n%s\nwant\n%s", raw, want)
+	}
+	for _, leaked := range []string{"actor", "reason", "user://a/", "seen in a log", "compromised"} {
+		if strings.Contains(string(raw), leaked) {
+			t.Errorf("the public form contains %q", leaked)
+		}
+	}
+	// The store's own form is untouched: it still says who and why.
+	stored, _ := json.Marshal(full[0])
+	if !strings.Contains(string(stored), `"actor":"user://a/b"`) || !strings.Contains(string(stored), `"reason":"seen in a log"`) {
+		t.Errorf("the store form lost its audit half: %s", stored)
+	}
+
+	for name, in := range map[string][]Entry{"nil": nil, "empty": {}} {
+		out, err := json.Marshal(Public(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != "[]" {
+			t.Errorf("%s input is served as %s, want []", name, out)
+		}
 	}
 }

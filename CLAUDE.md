@@ -493,6 +493,41 @@ not a convenience.
     against the config-parsing half rather than the request-handling half.
     Scenarios: `features/xaa.feature`)*
 
+21. **The public revocation list says what is revoked, and never who revoked it
+    or why.** `@decided 2026-10-04`: `GET /v1/revocations` stays unauthenticated,
+    because the enforcement points that poll it (tokenfuse's gateway, and any
+    consumer of agent-stack-go's `delegation.ParseSnapshot`) carry no key for
+    it, but its answer is the dedicated type `revoke.PublicEntry` (`jti`,
+    `subject`, `issued_before`, `expires`, beside the list's `as_of`) and no
+    longer the whole `revoke.Entry`. `actor` and `reason` are free text written
+    by whoever holds a revoke key, and an incident's reason names people,
+    systems and tickets that are not the business of anybody who can reach the
+    port. They stay where the operator reads them: the in-memory entry, the
+    `VOUCHRYX_REVOCATIONS_PATH` store line, and the `delegation_revoked` event;
+    invariant 6 still requires both on every revocation. A dedicated public
+    type rather than `json:"-"` on `revoke.Entry`, because `Entry` is also the
+    store's line format and a hidden tag there would stop recording who revoked
+    what. Every field a consumer reads keeps its name and type (a rename is a
+    consumer that silently stops matching), and an empty list is still `[]`,
+    since both consumers refuse a body with no array. Adding a member to the
+    public form is a decision, not a convenience: the strict decode in the
+    test below fails on it until the question "does a verifier need this?" has
+    been answered in the same diff.
+    *(tests: `TestThePublicRevocationListCarriesNeitherActorNorReason`,
+    `TestThePublicRevocationListKeepsEveryFieldAVerifierReads`,
+    `TestAHostileReasonNeverAppearsInThePublicList` (and, for the conversion on
+    its own, `TestThePublicFormDropsTheAuditHalfAndIsNeverNil` in
+    `internal/revoke`), all red first against 71a9a7e (the last one as a
+    build failure, `undefined: Public`), and
+    `TestTheOperatorsRecordStillSaysWhoRevokedAndWhy`, which passes before and
+    after by design, because it guards the other direction: a fix that blanked
+    actor and reason at ingestion would pass the first three and destroy the
+    audit trail. Mutants: actor and reason added
+    to the public type, `expires` dropped, an empty list served as `null`,
+    `issued_before` renamed, actor and reason stripped before `Add`, the
+    handler reverted to the whole entry, each caught by a named test.
+    Scenarios: `features/delegation.feature`)*
+
 ## Distribution
 
 Published as a container image, `ghcr.io/taipanbox/vouchryx`, built by

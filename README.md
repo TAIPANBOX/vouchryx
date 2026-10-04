@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-208-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-218-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -120,7 +120,7 @@ switch, different axis, and the second is the one an incident needs.
 |---|---|
 | `POST /v1/token` | RFC 8693 exchange (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`). Input: `subject_token` and `actor_token`, plus a `DPoP` header. Output: a short-lived JWT with nested `act` and `cnf.jkt`. Since 2026-09-24, the same route also runs Cross App Access's jwt-bearer grant (`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`, `assertion=<ID-JAG>`, `client_secret_basic`); see "Cross App Access" below. |
 | `POST /v1/revoke` | By `jti` for one token, or by `subject` for every token naming that agent anywhere in its chain: at this door since 2026-09-17, and at the enforcement points from agent-stack-go#61 and tokenfuse#298 on. `actor` and `reason` are required. A `jti` revocation ends one token, not the ones already exchanged from it. |
-| `GET /v1/revocations` | What enforcement points poll. Carries `as_of`, so an empty list and an unreachable service are not the same answer. |
+| `GET /v1/revocations` | What enforcement points poll, with no credential. Carries `as_of`, so an empty list and an unreachable service are not the same answer. Each entry carries only what a verifier needs to refuse a token: `jti`, `subject`, `issued_before`, `expires`. It does **not** carry the `actor` or the `reason` of the revocation: those stay in the operator's record (the event stream and the `VOUCHRYX_REVOCATIONS_PATH` store), so the public list does not say who revoked a token or why. |
 | `GET /.well-known/jwks.json` | Public keys, so verification is offline. |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata: this service's own endpoints and grants. Names no trusted issuer and no configured client. |
 
@@ -400,7 +400,7 @@ pick one.
 
 ## Testing
 
-165 tests. Tier T3: these are authorization decisions where a wrong answer is
+170 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;

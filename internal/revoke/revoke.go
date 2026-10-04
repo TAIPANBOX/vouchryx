@@ -76,6 +76,47 @@ type Entry struct {
 	Reason string `json:"reason"`
 }
 
+// PublicEntry is one revocation as the PUBLIC list serves it: exactly what a
+// verifier needs to refuse a token, and nothing about who revoked it or why.
+//
+// `@decided 2026-10-04`: `GET /v1/revocations` stays unauthenticated, because
+// the enforcement points that poll it (tokenfuse's gateway, and any Go
+// consumer of agent-stack-go's `delegation.ParseSnapshot`) carry no key for
+// it, but its answer no longer carries `Actor` and `Reason`. Those are the
+// operator's record: the event stream and the store keep them, and so does
+// the in-memory [Entry].
+//
+// A dedicated type rather than `json:"-"` on [Entry], because [Entry] is also
+// the store's line format and an omitted tag there would silently stop
+// recording who revoked what, which invariant 6 exists to prevent. The JSON
+// names and omission rules are the ones [Entry] has always had, because both
+// consumers read those names and a rename is a consumer that silently stops
+// matching.
+type PublicEntry struct {
+	JTI          string `json:"jti,omitempty"`
+	Subject      string `json:"subject,omitempty"`
+	IssuedBefore int64  `json:"issued_before,omitempty"`
+	Expires      int64  `json:"expires"`
+}
+
+// Public is the public rendering of a set of entries.
+//
+// Never nil, even for no entries: it marshals as `[]`, and both consumers
+// refuse a body whose `revocations` is missing or `null`, because reading that
+// as "nothing revoked" is how a wrong upstream empties a gateway's list.
+func Public(entries []Entry) []PublicEntry {
+	out := make([]PublicEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, PublicEntry{
+			JTI:          e.JTI,
+			Subject:      e.Subject,
+			IssuedBefore: e.IssuedBefore,
+			Expires:      e.Expires,
+		})
+	}
+	return out
+}
+
 // List is the in-memory revocation list.
 //
 // In memory, and said plainly rather than implied: a restart forgets, and every
