@@ -129,9 +129,15 @@ func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.Cfg.PublicSet())
 }
 
+// revocations is the list enforcement points poll, with no credential.
+//
+// `@decided 2026-10-04`: it stays public and carries only what a verifier
+// needs to refuse a token (`revoke.PublicEntry`). Who revoked and why is the
+// operator's record, in the event stream and the store, never in this answer
+// (CLAUDE.md invariant 21).
 func (s *Server) revocations(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"revocations": s.Revs.Active(s.now()),
+		"revocations": revoke.Public(s.Revs.Active(s.now())),
 		// So a poller can tell a list it fetched from one it failed to fetch:
 		// an empty list and an unreachable service look identical otherwise,
 		// and one of them means every revoked token is live.

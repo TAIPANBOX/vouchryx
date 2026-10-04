@@ -402,3 +402,36 @@ Feature: A delegation that can be proved, and ended
     Given the store path points where no file can be made
     When the service starts
     Then it refuses to start, because a service that cannot keep a revocation must not look healthy
+
+  # @decided 2026-10-04: the revocation list stays public, because the
+  # enforcement points that poll it carry no key for it, and its answer stops
+  # saying who revoked a token or why. Those stay in the operator's record.
+
+  # @test:TestThePublicRevocationListCarriesNeitherActorNorReason
+  Scenario: The public revocation list names what is revoked and not who revoked it or why
+    Given an operator has revoked a token and an agent, each with an actor and a reason
+    When anybody fetches the revocation list, with no credential
+    Then the answer holds both revocations
+    And no entry carries an actor or a reason, and neither text appears anywhere in the bytes
+
+  # @test:TestThePublicRevocationListKeepsEveryFieldAVerifierReads
+  Scenario: An enforcement point still reads everything it needs from the public list
+    Given an enforcement point that reads jti, subject, issued_before and expires from each entry, and as_of from the list
+    When it polls the list, empty and with revocations in it
+    Then every one of those fields is present, with the same name and type as before
+    And an empty list is still an empty array, because a body with no array is refused by the consumers
+    And the answer holds nothing else, so a field added later has to be argued for
+
+  # @test:TestAHostileReasonNeverAppearsInThePublicList
+  Scenario: A hostile reason cannot reach the people polling the list
+    Given a revocation whose reason is very long, full of unicode, quotes built to close a string, markup or control bytes
+    When anybody fetches the revocation list
+    Then none of that text is in the bytes, in raw or escaped form
+    And the list holds exactly one entry, because a reason cannot mint another
+
+  # @test:TestTheOperatorsRecordStillSaysWhoRevokedAndWhy
+  Scenario: The operator's own record still says who revoked and why
+    Given a service with a revocation store and an event stream
+    When a revocation is made with an actor and a reason
+    Then the store line and the delegation_revoked event both carry them
+    And the in-memory list still holds the whole entry, because narrowing the public answer must not narrow the audit trail

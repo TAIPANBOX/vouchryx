@@ -596,6 +596,278 @@ func TestRevokingASubjectReachesTheListEnforcementPointsPoll(t *testing.T) {
 	}
 }
 
+// wallClockStand is a stand whose clock is the wall clock, frozen once.
+//
+// revoke.List.Add prunes against the wall clock while Active takes the
+// server's, so a stand frozen in 2026-08 loses its first entry the moment a
+// second one is added. The tests below revoke more than once, which is why
+// they cannot use the default stand.
+func wallClockStand(t *testing.T) *stand {
+	t.Helper()
+	s := newStand(t)
+	s.now = time.Now().Truncate(time.Second)
+	frozen := s.now
+	s.srv.Now = func() time.Time { return frozen }
+	return s
+}
+
+// publicList fetches GET /v1/revocations the way an enforcement point does:
+// no credential of any kind.
+func publicList(t *testing.T, s *stand) []byte {
+	t.Helper()
+	w := httptest.NewRecorder()
+	s.srv.Routes().ServeHTTP(w, httptest.NewRequest("GET", "http://vouchryx.test/v1/revocations", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("the public list answered %d: %s", w.Code, w.Body)
+	}
+	return w.Body.Bytes()
+}
+
+// @decided 2026-10-04: the list stays public, because a verifier such as
+// tokenfuse's gateway polls it with no key, but the public answer no longer
+// says who revoked a token or why. Both belong to the operator's record (the
+// event stream and the store), which is not public.
+func TestThePublicRevocationListCarriesNeitherActorNorReason(t *testing.T) {
+	s := wallClockStand(t)
+	const (
+		subjectActor  = "user://acme/alice-the-revoker"
+		subjectReason = "credential found in a public paste, ticket SEC-4471"
+		jtiActor      = "user://acme/bob-the-revoker"
+		jtiReason     = "token logged by a misconfigured proxy, ticket SEC-4472"
+	)
+	for _, body := range []string{
+		`{"subject":"agent://acme/triage","actor":"` + subjectActor + `","reason":"` + subjectReason + `"}`,
+		`{"jti":"tok-1","actor":"` + jtiActor + `","reason":"` + jtiReason + `"}`,
+	} {
+		if w := s.revoke(t, body, revokeTestKey); w.Code != http.StatusOK {
+			t.Fatalf("a revocation was refused: %d %s", w.Code, w.Body)
+		}
+	}
+
+	raw := publicList(t, s)
+	var out struct {
+		Revocations []map[string]any `json:"revocations"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Revocations) != 2 {
+		t.Fatalf("the list holds %d entries, want 2: %s", len(out.Revocations), raw)
+	}
+	for _, e := range out.Revocations {
+		for _, k := range []string{"actor", "reason"} {
+			if _, present := e[k]; present {
+				t.Errorf("the public entry %v carries %q", e, k)
+			}
+		}
+	}
+	for _, leaked := range []string{subjectActor, subjectReason, jtiActor, jtiReason, "actor", "reason"} {
+		if strings.Contains(string(raw), leaked) {
+			t.Errorf("the public bytes contain %q: %s", leaked, raw)
+		}
+	}
+}
+
+// The other half of the decision. Every field a verifier reads must survive,
+// by name and by type, because both consumers (tokenfuse's
+// `Snapshot::from_json` and agent-stack-go's `delegation.ParseSnapshot`) read
+// the JSON names of the old `revoke.Entry` and a rename is a consumer that
+// silently stops matching.
+//
+// The strict decode below is also what makes this a fence: a field added to
+// the public form later has to be added here too, on purpose, with the
+// question "does a verifier need this?" asked in the same diff.
+func TestThePublicRevocationListKeepsEveryFieldAVerifierReads(t *testing.T) {
+	s := wallClockStand(t)
+
+	// An empty list is a list, not an absence: both consumers refuse a body
+	// whose `revocations` is missing or null, because reading that as "nothing
+	// revoked" is how a wrong upstream empties every revocation a gateway holds.
+	empty := publicList(t, s)
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(empty, &shape); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(shape["revocations"])); got != "[]" {
+		t.Fatalf("an empty list is served as %s, want []: %s", got, empty)
+	}
+	if _, err := delegation.ParseSnapshot(empty); err != nil {
+		t.Fatalf("agent-stack-go refuses an empty public list: %v", err)
+	}
+
+	for _, body := range []string{
+		`{"jti":"tok-1","actor":"user://acme/ops","reason":"leaked"}`,
+		`{"subject":"agent://acme/triage","actor":"user://acme/ops","reason":"compromised"}`,
+	} {
+		if w := s.revoke(t, body, revokeTestKey); w.Code != http.StatusOK {
+			t.Fatalf("a revocation was refused: %d %s", w.Code, w.Body)
+		}
+	}
+	raw := publicList(t, s)
+
+	// The JSON types, read exactly as the gateway reads them: strings and
+	// integers, and the cursor beside the list.
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	var strict struct {
+		AsOf        int64 `json:"as_of"`
+		Revocations []struct {
+			JTI          string `json:"jti"`
+			Subject      string `json:"subject"`
+			IssuedBefore int64  `json:"issued_before"`
+			Expires      int64  `json:"expires"`
+		} `json:"revocations"`
+	}
+	if err := dec.Decode(&strict); err != nil {
+		t.Fatalf("the public body has a member or a type no verifier reads: %v: %s", err, raw)
+	}
+	if strict.AsOf != s.now.Unix() {
+		t.Errorf("as_of is %d, want %d", strict.AsOf, s.now.Unix())
+	}
+	if len(strict.Revocations) != 2 {
+		t.Fatalf("the list holds %d entries, want 2: %s", len(strict.Revocations), raw)
+	}
+	wantExpires := s.now.Add(config.MaxTTL).Unix()
+	// Both entries expire in the same second and Active orders by expiry only,
+	// so the order between them is not a property of the list: find each.
+	byToken, bySubject := strict.Revocations[0], strict.Revocations[1]
+	if byToken.JTI == "" {
+		byToken, bySubject = bySubject, byToken
+	}
+	if byToken.JTI != "tok-1" || byToken.Subject != "" || byToken.IssuedBefore != 0 || byToken.Expires != wantExpires {
+		t.Errorf("the jti entry reads %+v", byToken)
+	}
+	if bySubject.JTI != "" || bySubject.Subject != "agent://acme/triage" ||
+		bySubject.IssuedBefore != s.now.Unix() || bySubject.Expires != wantExpires {
+		t.Errorf("the subject entry reads %+v", bySubject)
+	}
+
+	// And through the real consumer, not a copy of its struct.
+	snap, err := delegation.ParseSnapshot(raw)
+	if err != nil {
+		t.Fatalf("agent-stack-go refuses the public list: %v: %s", err, raw)
+	}
+	if snap.AsOf != s.now.Unix() || len(snap.Revocations) != 2 {
+		t.Fatalf("agent-stack-go reads %+v", snap)
+	}
+	gotToken, gotSubject := snap.Revocations[0], snap.Revocations[1]
+	if gotToken.JTI == "" {
+		gotToken, gotSubject = gotSubject, gotToken
+	}
+	if gotToken.JTI != "tok-1" || gotToken.Expires != wantExpires {
+		t.Errorf("agent-stack-go reads the jti entry as %+v", gotToken)
+	}
+	if gotSubject.Subject != "agent://acme/triage" || gotSubject.IssuedBefore != s.now.Unix() || gotSubject.Expires != wantExpires {
+		t.Errorf("agent-stack-go reads the subject entry as %+v", gotSubject)
+	}
+}
+
+// A reason is written by whoever holds a revoke key and is stored verbatim, so
+// it is hostile input to everything downstream. None of it may reach a
+// poller: not as a field, not as bytes, and not as structure (a reason built
+// to close a string and open another entry must not mint one).
+func TestAHostileReasonNeverAppearsInThePublicList(t *testing.T) {
+	hostile := map[string]string{
+		"very long":     "LONGMARK-" + strings.Repeat("r", 30_000) + "-LONGEND",
+		"unicode":       "UNIMARK-\u00e9\u4e2d\u6587 \U0001F525 \u202e\u2028-UNIEND",
+		"quotes":        `QUOTEMARK-"},{"jti":"injected","expires":9999999999},{"x":"-QUOTEEND`,
+		"markup":        "<script>alert(1)</script>MARKUPMARK",
+		"control bytes": "CTRLMARK-\x00\x01\n\r\t-CTRLEND",
+	}
+	markers := []string{"LONGMARK", "UNIMARK", "QUOTEMARK", "MARKUPMARK", "CTRLMARK", "ACTORMARK"}
+	for name, reason := range hostile {
+		t.Run(name, func(t *testing.T) {
+			s := wallClockStand(t)
+			actor := "user://acme/ACTORMARK-" + name
+			payload, err := json.Marshal(map[string]string{
+				"subject": "agent://acme/triage", "actor": actor, "reason": reason,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w := s.revoke(t, string(payload), revokeTestKey); w.Code != http.StatusOK {
+				t.Fatalf("the revocation was refused: %d %.200s", w.Code, w.Body)
+			}
+
+			raw := publicList(t, s)
+			escaped, _ := json.Marshal(reason)
+			for _, leaked := range []string{reason, strings.Trim(string(escaped), `"`), actor} {
+				if strings.Contains(string(raw), leaked) {
+					t.Fatalf("hostile text reached the public bytes (%d bytes served)", len(raw))
+				}
+			}
+			for _, marker := range markers {
+				if strings.Contains(string(raw), marker) {
+					t.Fatalf("a marker %q from the hostile revocation is in the public bytes", marker)
+				}
+			}
+			var out struct {
+				Revocations []map[string]any `json:"revocations"`
+			}
+			if err := json.Unmarshal(raw, &out); err != nil {
+				t.Fatalf("the public list is not JSON: %v", err)
+			}
+			if len(out.Revocations) != 1 {
+				t.Fatalf("the list holds %d entries after one revocation, want 1", len(out.Revocations))
+			}
+			if _, err := delegation.ParseSnapshot(raw); err != nil {
+				t.Fatalf("a consumer refuses the list: %v", err)
+			}
+		})
+	}
+}
+
+// What the operator keeps. The decision narrows the PUBLIC answer only: the
+// event stream and the store are the audit record, and a fix that satisfied
+// the tests above by blanking actor and reason where they are recorded would
+// pass every one of them while destroying the reason this service requires
+// them at all (invariant 6).
+func TestTheOperatorsRecordStillSaysWhoRevokedAndWhy(t *testing.T) {
+	events := filepath.Join(t.TempDir(), "events.ndjson")
+	ew, err := event.NewWriter(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ew.Close()
+	storePath := filepath.Join(t.TempDir(), "revocations.ndjson")
+	st, _, err := revoke.OpenStore(storePath, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := wallClockStand(t)
+	s.srv.Events = ew
+	s.srv.Store = st
+
+	const body = `{"subject":"agent://acme/triage","actor":"user://acme/alice","reason":"credential in a paste"}`
+	if w := s.revoke(t, body, revokeTestKey); w.Code != http.StatusOK {
+		t.Fatalf("the revocation was refused: %d %s", w.Code, w.Body)
+	}
+
+	onDisk, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := os.ReadFile(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"actor":"user://acme/alice"`, `"reason":"credential in a paste"`} {
+		if !strings.Contains(string(onDisk), want) {
+			t.Errorf("the store no longer holds %s: %s", want, onDisk)
+		}
+		if !strings.Contains(string(stream), want) {
+			t.Errorf("the delegation_revoked event no longer carries %s: %s", want, stream)
+		}
+	}
+
+	// The in-memory list, which the exchange door and the XAA door consult,
+	// still holds the whole entry; only the public rendering is narrower.
+	if e, revoked := s.srv.Revs.Revoked("", "agent://acme/triage", s.now.Unix(), s.now); !revoked ||
+		e.Actor != "user://acme/alice" || e.Reason != "credential in a paste" {
+		t.Errorf("the list no longer holds the whole entry: %+v revoked=%v", e, revoked)
+	}
+}
+
 func TestARevocationWithNoActorOrNoReasonIsRefused(t *testing.T) {
 	// A revocation nobody signed is an outage somebody has to reconstruct from
 	// timing. Same two fields tokenfuse's declassify endpoint requires.
