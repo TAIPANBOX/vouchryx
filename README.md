@@ -123,6 +123,7 @@ switch, different axis, and the second is the one an incident needs.
 | `GET /v1/revocations` | What enforcement points poll, with no credential. Carries `as_of`, so an empty list and an unreachable service are not the same answer. Each entry carries only what a verifier needs to refuse a token: `jti`, `subject`, `issued_before`, `expires`. It does **not** carry the `actor` or the `reason` of the revocation: those stay in the operator's record (the event stream and the `VOUCHRYX_REVOCATIONS_PATH` store), so the public list does not say who revoked a token or why. |
 | `GET /.well-known/jwks.json` | Public keys, so verification is offline. |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata: this service's own endpoints and grants. Names no trusted issuer and no configured client. |
+| `GET /healthz` | Liveness, with no credential: always `200` once the process is listening, and it checks nothing else. |
 
 There is deliberately **no introspection endpoint**. It would put this service
 on the request path of every enforcement point at once, and wardryx runs at a
@@ -207,7 +208,7 @@ healthy; one that came up trusting a default would issue everything.
 
 ## Walking the loop
 
-The Surface table above documents four endpoints, and until 2026-08-27 nothing
+The Surface table above documents six endpoints, and until 2026-08-27 nothing
 outside this repository's own tests could call them: an RFC 8693 exchange takes
 two signed input tokens and a DPoP proof whose public key travels in the JWS
 header, which is a JOSE client before it is a curl command. The driver that
@@ -506,7 +507,7 @@ Apache-2.0.
 - [x] Cross App Access (RFC 7523 jwt-bearer, an ID-JAG in), closed while
       `VOUCHRYX_CLIENTS` is unset; `vouchryx-demo xaa` walks it from a shell
 - [ ] An upper IdP in the sandbox; the profile mints a demo issuer instead
-- [ ] Rooms in the other repos' shared stack diagram, which still shows seven planes
+- [x] Rooms in the other repos' shared stack diagram, which now includes Vouchryx
 
 ## Licence
 
