@@ -147,7 +147,7 @@ fault "refusals: a success response moved" \
   pass ./scripts/every-refusal-reaches-the-operator.sh
 
 fault "base images: a FROM loses its digest and falls back to a moving tag" \
-  Dockerfile 'golang@sha256:3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244' 'golang:1.27' \
+  Dockerfile 'golang@sha256:5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c' 'golang:1.27' \
   fail ./scripts/base-images-pinned-by-digest.sh
 
 # And it must not fire on an unrelated Dockerfile edit that leaves both FROM
