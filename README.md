@@ -126,8 +126,7 @@ switch, different axis, and the second is the one an incident needs.
 | `GET /healthz` | Liveness, with no credential: always `200` once the process is listening, and it checks nothing else. |
 
 There is deliberately **no introspection endpoint**. It would put this service
-on the request path of every enforcement point at once, and wardryx runs at a
-3.2 ms p50.
+on the request path of every enforcement point at once.
 
 ## Install
 
@@ -180,7 +179,12 @@ gh attestation verify oci://ghcr.io/taipanbox/vouchryx:v0.2.0 -R TAIPANBOX/vouch
 
 ## Configuration
 
-Every value is required except the first, and none has a permissive default.
+Three values are required: `VOUCHRYX_ISSUER`, `VOUCHRYX_SIGNING_KEY` and
+`VOUCHRYX_TRUSTED_ISSUERS`. A missing or malformed one aborts the start. Every
+other value is optional and is listed below with its default. The Cross App
+Access grant is closed unless `VOUCHRYX_CLIENTS` is set, and while
+`VOUCHRYX_XAA_REQUIRE_DPOP` is `false` (the default) that grant accepts a bearer
+token with no DPoP proof.
 
 ```
 VOUCHRYX_ADDR             where to listen (default 127.0.0.1:4310)
@@ -341,7 +345,7 @@ A wrong client secret is refused with `401 {"error":"invalid_client"}` and a
 ## Where the crypto lives
 
 **Not here.** Signing, verification, the algorithm allowlist, the DPoP proof
-check and the `act` chain are `agent-stack-go/delegation`, from v0.8.0. This
+check and the `act` chain are `agent-stack-go/delegation`, pinned at v1.1.0 (`go.mod`). This
 service imports it, and today it is the only Go service that does: measured
 2026-09-16 over every Go repository in the stack, `wardryx`, `idryx`,
 `scopyx`, `heraldyx` and `mockryx` import nothing from that package. What this
@@ -412,10 +416,10 @@ planted its own set, named in `CLAUDE.md` invariants 18 to 20; the one
 survivor there is caught only by the happy-path test, not by the one named
 for the credential it breaks, and both are named so the reason is not lost.
 
-Coverage, measured 2026-09-24 with `go test ./internal/<pkg>/... -cover`
+Coverage, re-measured 2026-10-13 with `go test ./internal/<pkg>/... -cover`
 after Cross App Access landed: `xaa` 95.1% (new: pure functions with no HTTP
 or process boundary to leave untested), `config` 95.9% (was 95.2%), `revoke`
-86.4% (unchanged), `demo` 75.0% (was 70.8%), `api` 84.2% (was 87.5%, the one
+86.8% (86.4% on 2026-09-24), `demo` 75.0% (was 70.8%), `api` 84.2% (was 87.5%, the one
 that moved down: `internal/xaa`'s own share of the request path is now
 counted in `xaa`, not here, and a few of `tokenJWTBearer`'s internal
 `server_error` paths, a bad random source, a signing failure, are the same
@@ -492,10 +496,6 @@ Stated here rather than left to be discovered.
 - **`client_secret_basic` is the only client authentication method.**
   `private_key_jwt`, which the MCP extension also names, is not implemented;
   a client that only supports it cannot use this grant.
-
-## Licence
-
-Apache-2.0.
 
 ## Status
 
