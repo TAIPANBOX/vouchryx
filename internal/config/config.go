@@ -87,6 +87,8 @@ type Config struct {
 	// OPTIONAL; false (VOUCHRYX_XAA_REQUIRE_DPOP unset or "false") accepts a
 	// bearer token when the caller sends no proof (D2 of the interop plan).
 	XAARequireDPoP bool
+	// AllowedAudiences is the parsed VOUCHRYX_ALLOWED_AUDIENCES list.
+	AllowedAudiences []string
 }
 
 // DefaultAddr is where this service listens when nothing says otherwise.
@@ -207,8 +209,35 @@ func FromEnv() (Config, error) {
 			"VOUCHRYX_RESOURCES is required when VOUCHRYX_CLIENTS is set: without one " +
 				"the jwt-bearer grant would have no audience to issue an access token for")
 	}
+	// VOUCHRYX_ALLOWED_AUDIENCES is the list of audiences a token exchange may
+	// issue a token for (F-013). Unset, the issuer is the only one, which is
+	// what a request with no `audience` already got (AllowsAudience below). It
+	// reads with the grammar and the matcher of VOUCHRYX_RESOURCES: the same
+	// kind of list, and a second parser would be a second place for one rule
+	// to drift.
+	if spec := os.Getenv("VOUCHRYX_ALLOWED_AUDIENCES"); spec != "" {
+		audiences, err := xaa.ParseResources(spec)
+		if err != nil {
+			return c, fmt.Errorf("VOUCHRYX_ALLOWED_AUDIENCES: %w", err)
+		}
+		c.AllowedAudiences = audiences
+	}
 
 	return c, nil
+}
+
+// AllowsAudience reports whether a token exchange may issue a token for aud.
+//
+// With VOUCHRYX_ALLOWED_AUDIENCES unset the answer is yes for the issuer and no
+// for everything else. With the list set, the list is the whole set: the issuer
+// is not added to it, so an operator who lists only a resource gets tokens for
+// that resource and no other. The matcher is xaa.Configured, exact equality,
+// the one the jwt-bearer grant uses for its own resources.
+func (c Config) AllowsAudience(aud string) bool {
+	if len(c.AllowedAudiences) == 0 {
+		return aud != "" && aud == c.Issuer
+	}
+	return xaa.Configured(aud, c.AllowedAudiences)
 }
 
 // FindIssuer returns the trusted issuer with this `iss`.
@@ -310,6 +339,15 @@ func loadTrusted(spec string) ([]Issuer, error) {
 		if len(parts) != 3 {
 			return nil, fmt.Errorf(
 				"VOUCHRYX_TRUSTED_ISSUERS entry %q is not `iss|aud|jwks-path`", line)
+		}
+		if parts[1] == "" {
+			// The audience check in internal/api matches a token's aud
+			// against this value, so an empty one would accept a token
+			// minted for ANY audience. Refused here, with the issuer named,
+			// so the operator knows which line to fix (CLAUDE.md invariant 22).
+			return nil, fmt.Errorf(
+				"VOUCHRYX_TRUSTED_ISSUERS entry for %s has an empty audience; an empty "+
+					"audience accepts a token minted for any audience", parts[0])
 		}
 		raw, err := os.ReadFile(parts[2]) // #nosec G304 -- operator-supplied path from the environment, read once at startup
 		if err != nil {

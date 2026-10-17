@@ -13,6 +13,7 @@
 package manifest_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -548,5 +549,71 @@ func TestABadRevocationsPathRefusesToStart(t *testing.T) {
 	}
 	if waitFor(full["VOUCHRYX_ADDR"], 300*time.Millisecond) {
 		t.Fatal("the service listened despite a revocations path it could not open")
+	}
+}
+
+// An empty audience in VOUCHRYX_TRUSTED_ISSUERS is refused by the BUILT binary,
+// not only by the config package's own tests (CLAUDE.md invariant 22). The
+// binary must exit with the declared code, and say on stderr which issuer.
+func TestAnEmptyAudienceInTrustedIssuersRefusesTheBinaryNamingTheIssuer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts processes")
+	}
+	m, r := load(t)
+	var svc = m.Components[0]
+	for _, c := range m.Components {
+		if c.Class == "service" {
+			svc = c
+			break
+		}
+	}
+	if svc.Class != "service" {
+		t.Skip("this repository declares no service")
+	}
+
+	bin := filepath.Join(t.TempDir(), "vouchryx")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/vouchryx")
+	build.Dir = r
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building: %v\n%s", err, out)
+	}
+
+	full := workingEnvironment(t, r)
+	// iss|aud|jwks-path: blank the aud and keep the rest of the working line.
+	parts := strings.SplitN(full["VOUCHRYX_TRUSTED_ISSUERS"], "|", 3)
+	parts[1] = ""
+	full["VOUCHRYX_TRUSTED_ISSUERS"] = strings.Join(parts, "|")
+	env := []string{}
+	for k, v := range full {
+		env = append(env, k+"="+v)
+	}
+
+	var stderr bytes.Buffer
+	cmd := exec.Command(bin)
+	cmd.Env = env
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("an empty audience did not exit with a status: %v", err)
+		}
+		if exit.ExitCode() != svc.Checked.MissingRequiredExitCode {
+			t.Fatalf("an empty audience exited %d, want %d (components.json's missing_required_exit_code)",
+				exit.ExitCode(), svc.Checked.MissingRequiredExitCode)
+		}
+		if !strings.Contains(stderr.String(), parts[0]) || !strings.Contains(stderr.String(), "empty audience") {
+			t.Fatalf("the refusal does not name the issuer %s: %q", parts[0], stderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatal("the service is still running with a trusted issuer that has no audience; " +
+			"it must refuse to start rather than accept a token for any audience")
 	}
 }

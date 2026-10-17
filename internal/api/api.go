@@ -203,6 +203,13 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 		s.emit("delegation_denied", sub, nil, merge(detail, map[string]any{"reason": reason}))
 		refuse(w, http.StatusBadRequest, "invalid_scope", reason, detail)
 	}
+	// The audience variant, the same shape again: `invalid_target` is the OAuth
+	// code for a target the server will not issue for. The record carries the
+	// audience that was asked for; the response carries only the code.
+	denyTarget := func(sub, reason string, detail map[string]any) {
+		s.emit("delegation_denied", sub, nil, merge(detail, map[string]any{"reason": reason}))
+		refuse(w, http.StatusBadRequest, "invalid_target", reason, detail)
+	}
 
 	// The DPoP proof first: it costs least and it decides what the token is
 	// bound to, so a request that cannot be bound is refused before anything
@@ -325,6 +332,17 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 		outJKT, cnfSource = actorJKT, "actor_token"
 	}
 
+	// The audience this token is issued FOR: the caller's `audience` if it named
+	// one, else this service's own issuer. It must be on the operator's
+	// allow-list (VOUCHRYX_ALLOWED_AUDIENCES, or the issuer alone when that is
+	// unset). Checked before anything is signed, because `aud` is the claim a
+	// verifier acts on to decide where a delegation may be spent (F-013).
+	aud := firstNonEmpty(r.PostForm.Get("audience"), s.Cfg.Issuer)
+	if !s.Cfg.AllowsAudience(aud) {
+		denyTarget(actorSub, "audience_not_allowed", map[string]any{"audience": aud})
+		return
+	}
+
 	chain, err := delegation.Extend(prior, actorSub)
 	if err != nil {
 		deny(actorSub, "bad_delegation_chain", map[string]any{"detail": err.Error()})
@@ -347,7 +365,7 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 	claims := map[string]any{
 		"iss": s.Cfg.Issuer,
 		"sub": sub,
-		"aud": firstNonEmpty(r.PostForm.Get("audience"), s.Cfg.Issuer),
+		"aud": aud,
 		"iat": now.Unix(),
 		"exp": now.Add(s.Cfg.TTL).Unix(),
 		"jti": jti,
@@ -795,7 +813,10 @@ func (s *Server) expectedHTU(r *http.Request) string {
 
 func audienceMatches(aud any, want string) bool {
 	if want == "" {
-		return true
+		// An issuer with no audience matches nothing. Startup refuses that
+		// configuration (internal/config, naming the issuer); this keeps the
+		// matcher from agreeing with it if it were ever reached (F-013).
+		return false
 	}
 	switch v := aud.(type) {
 	case string:

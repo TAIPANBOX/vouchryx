@@ -75,15 +75,19 @@ acting against anyone else.
    *(test: `TestARefusalDoesNotSayWhichCheckFailed` for the first half,
    `TestARefusalAfterTheSubjectIsKnownReachesTheRecord` for the second)*
 
-   **One exception, and only one.** A widened scope returns `invalid_scope`
+   **Two exceptions, and only two.** A widened scope returns `invalid_scope`
    rather than `invalid_grant` (`denyScope`, api.go), because RFC 8693 leaves
    `scope` to the authorization server and the two OAuth codes name different
-   problems; every other credential check, every `deny`, still returns
-   `invalid_grant` (the token handler's other codes, `invalid_request`,
-   `unsupported_grant_type` and `server_error`, and `/v1/revoke`'s own codes,
-   are not part of this exception because they are not credential checks).
+   problems. An audience outside `VOUCHRYX_ALLOWED_AUDIENCES` returns
+   `invalid_target` (`denyTarget`, api.go; invariant 22), because it names a
+   target the server will not issue for, not a credential. Every other
+   credential check, every other `deny`, still returns `invalid_grant` (the
+   token handler's other codes, `invalid_request`, `unsupported_grant_type`
+   and `server_error`, and `/v1/revoke`'s own codes, are not part of these
+   exceptions because they are not credential checks).
    *(test: `TestAWidenedScopeGetsADifferentOAuthCodeThanEveryOtherRefusal`
-   pins both codes in one test, so the two never drift towards each other)*
+   pins both codes in one test, so the two never drift towards each other;
+   `TestAnAudienceOffTheAllowListIsRefusedWithInvalidTarget` pins the second)*
 
 6. **A revocation carries an actor and a reason.** One with neither is an outage
    somebody has to reconstruct from timing. *(test:
@@ -527,6 +531,33 @@ not a convenience.
     `issued_before` renamed, actor and reason stripped before `Add`, the
     handler reverted to the whole entry, each caught by a named test.
     Scenarios: `features/delegation.feature`)*
+
+22. **The audience a token is issued for comes from an allow-list.**
+    `@decided 2026-10-17`: a token exchange issues a token for the audience
+    the caller asks for only when the operator has listed it in
+    `VOUCHRYX_ALLOWED_AUDIENCES`, a comma-separated list of absolute URLs read
+    with the grammar and the exact matcher of `VOUCHRYX_RESOURCES`. Unset, the
+    list is this service's own issuer and nothing else, which is what a request
+    with no `audience` already got. A request for any other audience is refused
+    with `invalid_target` and no token, and the refusal is recorded as
+    `delegation_denied` with reason `audience_not_allowed`, filed under the
+    actor that asked. The list is the whole set: a configured list does not
+    gain the issuer implicitly. A trusted issuer configured with an empty
+    audience refuses the start, naming the issuer, because an empty audience
+    accepts a token minted for any audience; the matcher agrees, matching
+    nothing against an empty expectation. `@claude 2026-10-17`, the design
+    details (the unset default, the whole-set rule, `invalid_target` as the
+    code) are this repository's reading of the decision, open to reversal.
+    *(tests: `TestWithNoAllowListOnlyTheIssuerIsIssuable`,
+    `TestAnAudienceOffTheAllowListIsRefusedWithInvalidTarget`,
+    `TestTheAllowListMatchesExactlyAndNotByPrefix`,
+    `TestAnAllowedAudienceIsIssuedAsRequested`,
+    `TestAnEmptyTrustedAudienceMatchesNothing` (`internal/api`);
+    `TestAMalformedAllowListRefusesToStart`,
+    `TestTheAllowListIsParsedWithTheResourceGrammar`,
+    `TestAnIssuerWithAnEmptyAudienceIsRefusedAndNamedAtStartup`
+    (`internal/config`); `TestAnEmptyAudienceInTrustedIssuersRefusesTheBinaryNamingTheIssuer`
+    (`internal/manifest`, the built binary). Scenarios: `features/delegation.feature`)*
 
 ## Distribution
 

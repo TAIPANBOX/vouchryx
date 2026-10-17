@@ -435,3 +435,51 @@ Feature: A delegation that can be proved, and ended
     When a revocation is made with an actor and a reason
     Then the store line and the delegation_revoked event both carry them
     And the in-memory list still holds the whole entry, because narrowing the public answer must not narrow the audit trail
+
+  # @test:TestWithNoAllowListOnlyTheIssuerIsIssuable
+  Scenario: Without an allow-list, a token is issued for this service and for nothing else
+    Given the operator has configured no list of audiences
+    When an exchange asks for this service's own issuer, or for any other audience
+    Then the token for the issuer comes back, and every other audience is refused with no token
+
+  # @test:TestAnAudienceOffTheAllowListIsRefusedWithInvalidTarget
+  Scenario: An audience nobody listed gets no token, and the refusal is on the record
+    Given the operator has listed this service and one resource
+    When an exchange asks for an audience outside that list
+    Then nothing is issued, the answer is invalid_target, and the record names the audience asked for and the agent that asked
+
+  # @test:TestAnAllowedAudienceIsIssuedAsRequested
+  Scenario: A listed audience is issued as asked
+    Given the operator has listed a resource
+    When an exchange asks for that resource
+    Then the token comes back issued for it, and the issuer's own token still comes back when no audience is asked for
+
+  # @test:TestTheAllowListMatchesExactlyAndNotByPrefix
+  Scenario: Only the exact listed audience passes, not a longer or a shorter one
+    Given the operator has listed one resource
+    When an exchange asks for that resource with a suffix, a prefix of it, or with no audience at all
+    Then every one of those is refused, because the list is the whole set and nothing matches by starting the same way
+
+  # @test:TestAnEmptyTrustedAudienceMatchesNothing
+  Scenario: An issuer with no audience matches no token
+    Given a trusted issuer whose configured audience is empty
+    When a token from that issuer is checked against it, whatever audience the token names
+    Then no token matches, so none is accepted
+
+  # @test:TestAnEmptyAudienceInTrustedIssuersRefusesTheBinaryNamingTheIssuer
+  Scenario: A trusted issuer with no audience stops the start, and the error names it
+    Given a trusted issuer whose audience field is empty
+    When the service starts
+    Then it refuses to start, and the message names that issuer so the operator knows which line to fix
+
+  # @test:TestAMalformedAllowListRefusesToStart
+  Scenario: A malformed allow-list stops the start
+    Given an allow-list entry that is not an absolute URL, or a list that names nothing
+    When the service starts
+    Then it refuses to start and names the variable
+
+  # @test:TestTheAllowListIsParsedWithTheResourceGrammar
+  Scenario: The allow-list reads the same way the resource list does
+    Given a comma-separated list of absolute URLs with spaces around some entries
+    When the service starts
+    Then every entry is taken, trimmed, and nothing else is read from it
