@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-218-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-228-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -204,6 +204,8 @@ VOUCHRYX_RESOURCES       comma-separated absolute URLs the jwt-bearer grant may
                           issue for; required once VOUCHRYX_CLIENTS is set
 VOUCHRYX_XAA_REQUIRE_DPOP "true" or "false" (default); requires a DPoP proof on
                           the jwt-bearer grant when true
+VOUCHRYX_ALLOWED_AUDIENCES comma-separated absolute URLs a token exchange may
+                          issue a token for; unset, only VOUCHRYX_ISSUER
 ```
 
 A missing or malformed value **aborts the process** and names the variable. A
@@ -272,9 +274,11 @@ issuer as an input, which is the operator's explicit line and never a default:
 VOUCHRYX_TRUSTED_ISSUERS=$'https://idp.local|http://127.0.0.1:4310|idp.jwks.json\nhttp://127.0.0.1:4310|http://127.0.0.1:4310|signing.jwks.json'
 ```
 
-The token being handed on must have been minted for this service's own
-audience (`audience` omitted, or equal to `VOUCHRYX_ISSUER`), or the self-trust
-entry refuses it. A bound token presented by anyone but its holder issues
+The token being handed on must name this service's own issuer as its `aud`,
+which is the self-trust entry's audience, or the entry refuses it. The token
+this service issues for the hand-off goes to an audience on
+`VOUCHRYX_ALLOWED_AUDIENCES` (see Configuration), or to the issuer when that is
+unset. A bound token presented by anyone but its holder issues
 nothing, an unbound delegate credential issues nothing (the delegator would be
 minting a token in the delegate's name bound to its own key), and a revoked
 token issues nothing, whichever party in its chain the revocation names.
@@ -405,7 +409,7 @@ pick one.
 
 ## Testing
 
-170 tests. Tier T3: these are authorization decisions where a wrong answer is
+180 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;
@@ -459,6 +463,14 @@ Stated here rather than left to be discovered.
   other check that could never fire. What is still missing is a second caller:
   no Go service in the estate sets `delegation.Options.Revoked`, so
   `delegation.Revocations` in `agent-stack-go` is a cache nothing constructs.
+- **The audience list is trusted as written.** Whoever sets
+  `VOUCHRYX_ALLOWED_AUDIENCES` decides which resources a delegation may be
+  spent at. Nothing here checks that a listed URL is the resource the operator
+  meant, and an audience left off the list is refused, not reconciled.
+- **The signing key is single.** The published key set holds one key, so a
+  rotation replaces it at once: tokens issued under the old key stop verifying
+  at every verifier that has polled the new set, and no overlap period, in
+  which both keys are published, exists. Not built and not measured.
 - **Where a `subject_token` comes from is out of scope.** This accepts one from
   a configured issuer; obtaining it from a customer's own IdP is a deployment
   shape that does not exist yet.

@@ -39,7 +39,8 @@
           "VOUCHRYX_REVOCATIONS_PATH": { "required": false },
           "VOUCHRYX_CLIENTS": { "required": false },
           "VOUCHRYX_RESOURCES": { "required": false },
-          "VOUCHRYX_XAA_REQUIRE_DPOP": { "required": false }
+          "VOUCHRYX_XAA_REQUIRE_DPOP": { "required": false },
+          "VOUCHRYX_ALLOWED_AUDIENCES": { "required": false }
         },
         "missing_required_exit_code": 2
       },
@@ -75,6 +76,10 @@
         "xaa_require_dpop_default": {
           "value": "unset or \"false\": the jwt-bearer grant accepts a bearer token when the caller presents no DPoP proof",
           "why": "D2 of the interop plan: requiring DPoP unconditionally would make the grant unusable with clients that do not send it yet; an operator with DPoP-capable clients sets this to \"true\""
+        },
+        "allowed_audiences_default": {
+          "value": "unset: a token exchange may issue a token for this service's own issuer and for no other audience",
+          "why": "optional because making it required would stop every existing bring-up, and the unset behaviour is the one a launcher can rely on without configuring anything: the exchange issues for its own issuer, which is what a request with no audience already got. A caller asking for any other audience is refused with invalid_target until the operator lists it here, which is the decision F-013 closed; it is a list an operator writes, not a value this service can infer."
         }
       }
     },

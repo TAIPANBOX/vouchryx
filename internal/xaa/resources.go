@@ -20,9 +20,11 @@ var ErrResourceMismatch = errors.New("xaa: the assertion's resource and the requ
 // configured one" to fall back to.
 var ErrResourceAmbiguous = errors.New("xaa: no resource was named and more than one is configured")
 
-// ParseResources reads VOUCHRYX_RESOURCES: a comma-separated list of absolute
-// URLs, each one a resource this service's jwt-bearer grant may issue an
-// access token for.
+// ParseResources reads a comma-separated list of absolute URLs: VOUCHRYX_RESOURCES
+// (each one a resource the jwt-bearer grant may issue an access token for), and
+// VOUCHRYX_ALLOWED_AUDIENCES (each one an audience a token exchange may issue
+// for). The two lists are the same kind of thing, so they share this grammar;
+// the caller names the variable in its own error.
 func ParseResources(spec string) ([]string, error) {
 	var out []string
 	for _, part := range strings.Split(spec, ",") {
@@ -32,12 +34,12 @@ func ParseResources(spec string) ([]string, error) {
 		}
 		u, err := url.Parse(r)
 		if err != nil || u.Scheme == "" || u.Host == "" {
-			return nil, fmt.Errorf("VOUCHRYX_RESOURCES entry %q is not an absolute URL", r)
+			return nil, fmt.Errorf("entry %q is not an absolute URL", r)
 		}
 		out = append(out, r)
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("VOUCHRYX_RESOURCES names no resource")
+		return nil, fmt.Errorf("names no resource")
 	}
 	return out, nil
 }
@@ -66,11 +68,24 @@ func SelectResource(assertionResource, requestResource string, configured []stri
 	}
 }
 
-func checkConfigured(resource string, configured []string) (string, error) {
+// Configured reports whether value is one of configured, by exact string
+// equality. It is the one matcher for every list this service checks a request
+// against: the jwt-bearer grant's resources here, and the token exchange's
+// audiences (VOUCHRYX_ALLOWED_AUDIENCES, config.Config.AllowsAudience). Exact and
+// never a prefix, because a prefix match on a resource or an audience is how one
+// of them answers for another.
+func Configured(value string, configured []string) bool {
 	for _, c := range configured {
-		if c == resource {
-			return resource, nil
+		if c == value {
+			return true
 		}
+	}
+	return false
+}
+
+func checkConfigured(resource string, configured []string) (string, error) {
+	if Configured(resource, configured) {
+		return resource, nil
 	}
 	return "", ErrResourceNotConfigured
 }
