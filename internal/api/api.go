@@ -46,6 +46,7 @@ import (
 	"github.com/TAIPANBOX/agent-stack-go/event"
 	"github.com/TAIPANBOX/vouchryx/internal/config"
 	"github.com/TAIPANBOX/vouchryx/internal/revoke"
+	"github.com/TAIPANBOX/vouchryx/internal/signer"
 	"github.com/TAIPANBOX/vouchryx/internal/xaa"
 )
 
@@ -82,6 +83,8 @@ type RevocationStore interface {
 // revocation list and the proof cache, both of which own their own locking.
 type Server struct {
 	Cfg    config.Config
+	// Signer signs every token this server issues (CLAUDE.md invariant 27).
+	Signer signer.Signer
 	Revs   *revoke.List
 	Store  RevocationStore
 	Proofs *delegation.Verifier

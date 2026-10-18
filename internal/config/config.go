@@ -63,6 +63,11 @@ type Config struct {
 	Issuer     string
 	SigningKey *ecdsa.PrivateKey
 	KeyID      string
+	// Signer says where the working signing key comes from: "file" (the default,
+	// VOUCHRYX_SIGNING_KEY) or "keyryx" (a delegated key Keyryx certifies).
+	Signer string
+	// Keyryx says how this service reaches Keyryx. Set only when Signer is "keyryx".
+	Keyryx *KeyryxConfig
 	TTL        time.Duration
 	Trusted    []Issuer
 	EventsPath string
@@ -105,6 +110,21 @@ type Config struct {
 	// this service, never a subject or an actor to exchange, and an issuer in
 	// one table gains nothing in the other.
 	Workloads []Issuer
+}
+
+// KeyryxConfig is how a service with VOUCHRYX_SIGNER=keyryx reaches Keyryx.
+type KeyryxConfig struct {
+	// BaseURL is the custody API origin, VOUCHRYX_KEYRYX_URL.
+	BaseURL string
+	// Consumer is the consumer name custody's policy grants the key to,
+	// VOUCHRYX_KEYRYX_CONSUMER.
+	Consumer string
+	// Socket is the unix socket custody gave this consumer,
+	// VOUCHRYX_KEYRYX_SOCKET. Exactly one of Socket and BearerFile is set.
+	Socket string
+	// BearerFile holds the consumer's key or projected token,
+	// VOUCHRYX_KEYRYX_CREDENTIAL_FILE.
+	BearerFile string
 }
 
 // DefaultAddr is where this service listens when nothing says otherwise.
