@@ -33,7 +33,7 @@ func newKeyryxStand(t *testing.T, overlap, certify bool) (*stand, *keyryxtest.Se
 	s := newStand(t)
 	clock := func() time.Time { return s.now }
 	s.srv.Now = clock
-	fake := keyryxtest.New(t, signer.KeyName, "vouchryx", "bearer-for-the-test", clock)
+	fake := keyryxtest.New(t, signer.KeyName, "vouchryx", "canary-custody-bearer", clock)
 	tokenFile := filepath.Join(t.TempDir(), "keyryx.token")
 	if err := os.WriteFile(tokenFile, []byte(fake.Token), 0o600); err != nil {
 		t.Fatal(err)

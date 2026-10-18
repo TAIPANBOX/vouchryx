@@ -310,7 +310,7 @@ func TestTheWorkingKeyIsCertifiedAtStart(t *testing.T) {
 	// The real client against the fake custody, with the renewal loop started the
 	// way main starts it. Within a few seconds the working key must be certified
 	// and the signer ready. Nothing is started, so nothing is ever certified.
-	fake := keyryxtest.New(t, KeyName, "vouchryx", "bearer-for-the-test", time.Now)
+	fake := keyryxtest.New(t, KeyName, "vouchryx", "canary-custody-bearer", time.Now)
 	tokenFile := filepath.Join(t.TempDir(), "keyryx.token")
 	if err := os.WriteFile(tokenFile, []byte(fake.Token), 0o600); err != nil {
 		t.Fatal(err)
