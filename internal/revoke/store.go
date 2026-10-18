@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -33,6 +34,10 @@ type Loaded struct {
 	Active   []Entry
 	Expired  int
 	TornTail bool
+	// Standing is every ban whose revocation half has expired while the ban
+	// itself still stands (invariant 25): it carries no list entry, and the
+	// startup restores it into the list's bans all the same.
+	Standing []Entry
 }
 
 // OpenStore reads every entry at path, keeps the ones still load-bearing at
@@ -50,6 +55,10 @@ func OpenStore(path string, now time.Time) (*Store, Loaded, error) {
 		return nil, got, fmt.Errorf("reading VOUCHRYX_REVOCATIONS_PATH at %s: %w", path, err)
 	}
 	lines := bytes.Split(raw, []byte("\n"))
+	// Bans by subject, in file order: a later ban replaces an earlier one and
+	// a lift removes it. Applied as the file is read, so the file's own order
+	// is the history and compaction keeps only its result.
+	bans := map[string]Entry{}
 	for i, l := range lines {
 		if len(bytes.TrimSpace(l)) == 0 {
 			continue
@@ -65,15 +74,47 @@ func OpenStore(path string, now time.Time) (*Store, Loaded, error) {
 		}
 		if !whole(e) {
 			return nil, got, fmt.Errorf("VOUCHRYX_REVOCATIONS_PATH %s line %d names no token or subject, "+
-				"or no actor, reason or expiry; this service never writes one", path, i+1)
+				"or no actor, reason or expiry, or is a ban or a lift of a shape this service never writes", path, i+1)
+		}
+		if e.Lift {
+			// The ban ends; its revocation half, if still active, stays as an
+			// ordinary subject entry, because a lift never un-revokes.
+			delete(bans, e.Subject)
+			for j := range got.Active {
+				if got.Active[j].Subject == e.Subject {
+					got.Active[j].Ban = false
+				}
+			}
+			continue
+		}
+		if e.Ban {
+			bans[e.Subject] = e
 		}
 		if e.Expires <= now.Unix() {
-			got.Expired++
+			if !e.Ban {
+				got.Expired++
+			}
 			continue
 		}
 		got.Active = append(got.Active, e)
 	}
-	if err := rewrite(path, got.Active); err != nil {
+	// A ban still standing whose own line is not in Active (its revocation
+	// half expired) is Standing. One whose ban was replaced by a later ban of
+	// the same subject keeps only the later one.
+	for j := range got.Active {
+		if got.Active[j].Ban {
+			if b, ok := bans[got.Active[j].Subject]; !ok || b != got.Active[j] {
+				got.Active[j].Ban = false
+			}
+		}
+	}
+	for _, b := range bans {
+		if b.Expires <= now.Unix() {
+			got.Standing = append(got.Standing, b)
+		}
+	}
+	sort.Slice(got.Standing, func(i, j int) bool { return got.Standing[i].Subject < got.Standing[j].Subject })
+	if err := rewrite(path, append(append([]Entry{}, got.Active...), got.Standing...)); err != nil {
 		return nil, got, err
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304 -- the same operator-supplied path
@@ -84,9 +125,20 @@ func OpenStore(path string, now time.Time) (*Store, Loaded, error) {
 }
 
 // whole is the shape revokeHandler always writes: a token or a subject (a
-// subject with its moment), an actor, a reason and an expiry.
+// subject with its moment), an actor, a reason and an expiry. A ban is a
+// subject entry with its moment and no token; a lift names a subject, an
+// actor and a reason, and neither a token nor a moment.
 func whole(e Entry) bool {
-	if e.Actor == "" || e.Reason == "" || e.Expires <= 0 {
+	if e.Actor == "" || e.Reason == "" {
+		return false
+	}
+	switch {
+	case e.Lift:
+		return !e.Ban && e.JTI == "" && e.Subject != "" && e.IssuedBefore == 0
+	case e.Ban:
+		return e.JTI == "" && e.Subject != "" && e.IssuedBefore > 0 && e.Expires > 0
+	}
+	if e.Expires <= 0 {
 		return false
 	}
 	if e.JTI != "" {

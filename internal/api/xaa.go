@@ -114,6 +114,13 @@ func (s *Server) tokenJWTBearer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A banned user or agent redeems nothing (invariant 25), whenever the
+	// assertion was minted.
+	if e, ok := s.Revs.Banned([]string{mappedSub, client.Agent}); ok {
+		deny("invalid_grant", "party_banned", map[string]any{"subject": e.Subject})
+		return
+	}
+
 	scope, err := xaa.NarrowScope(result.Scope, r.PostForm.Get("scope"))
 	if err != nil {
 		deny("invalid_grant", "scope_widened", map[string]any{"detail": err.Error()})
@@ -249,6 +256,9 @@ func (s *Server) authServerMetadata(w http.ResponseWriter, r *http.Request) {
 		"jwks_uri":                              base + "/.well-known/jwks.json",
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic"},
 		"dpop_signing_alg_values_supported":     []string{"ES256"},
+	}
+	if s.Cfg.Agents != nil {
+		grants = append(grants, ClientCredentialsGrantType)
 	}
 	if s.Cfg.XAAClients != nil {
 		grants = append(grants, JWTBearerGrantType)

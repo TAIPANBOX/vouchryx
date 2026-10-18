@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-228-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-278-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -118,8 +118,9 @@ switch, different axis, and the second is the one an incident needs.
 
 | | |
 |---|---|
-| `POST /v1/token` | RFC 8693 exchange (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`). Input: `subject_token` and `actor_token`, plus a `DPoP` header. Output: a short-lived JWT with nested `act` and `cnf.jkt`. Since 2026-09-24, the same route also runs Cross App Access's jwt-bearer grant (`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`, `assertion=<ID-JAG>`, `client_secret_basic`); see "Cross App Access" below. |
-| `POST /v1/revoke` | By `jti` for one token, or by `subject` for every token naming that agent anywhere in its chain: at this door since 2026-09-17, and at the enforcement points from agent-stack-go#61 and tokenfuse#298 on. `actor` and `reason` are required. A `jti` revocation ends one token, not the ones already exchanged from it. |
+| `POST /v1/token` | RFC 8693 exchange (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`). Input: `subject_token` and `actor_token`, plus a `DPoP` header. Output: a short-lived JWT with nested `act` and `cnf.jkt`. Since 2026-09-24, the same route also runs Cross App Access's jwt-bearer grant (`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`, `assertion=<ID-JAG>`, `client_secret_basic`); see "Cross App Access" below. And `grant_type=client_credentials`: an agent's own five-minute credential, for an agent enrolled in `VOUCHRYX_AGENTS`, with a mandatory `DPoP` header; see "An agent's own credential" below. |
+| `POST /v1/revoke` | By `jti` for one token, or by `subject` for every token naming that agent anywhere in its chain: at this door since 2026-09-17, and at the enforcement points from agent-stack-go#61 and tokenfuse#298 on. `actor` and `reason` are required. A `jti` revocation ends one token, not the ones already exchanged from it. With `"ban": true` (a `subject` only) it is also a ban: nothing names that party again until the ban is lifted. |
+| `POST /v1/revoke/lift` | Ends a ban. Same keys as `/v1/revoke`; `subject`, `actor` and `reason` required, and the subject must be banned. It never un-revokes: what the party held when it was banned stays revoked. |
 | `GET /v1/revocations` | What enforcement points poll, with no credential. Carries `as_of`, so an empty list and an unreachable service are not the same answer. Each entry carries only what a verifier needs to refuse a token: `jti`, `subject`, `issued_before`, `expires`. It does **not** carry the `actor` or the `reason` of the revocation: those stay in the operator's record (the event stream and the `VOUCHRYX_REVOCATIONS_PATH` store), so the public list does not say who revoked a token or why. |
 | `GET /.well-known/jwks.json` | Public keys, so verification is offline. |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata: this service's own endpoints and grants. Names no trusted issuer and no configured client. |
@@ -180,7 +181,9 @@ gh attestation verify oci://ghcr.io/taipanbox/vouchryx:v0.3.0 -R TAIPANBOX/vouch
 ## Configuration
 
 Three values are required: `VOUCHRYX_ISSUER`, `VOUCHRYX_SIGNING_KEY` and
-`VOUCHRYX_TRUSTED_ISSUERS`. A missing or malformed one aborts the start. Every
+`VOUCHRYX_TRUSTED_ISSUERS`, the last one unless `VOUCHRYX_AGENTS` enrols at
+least one agent (a service for agents alone has no human identity provider to
+trust). A missing or malformed one aborts the start. Every
 other value is optional and is listed below with its default. The Cross App
 Access grant is closed unless `VOUCHRYX_CLIENTS` is set, and while
 `VOUCHRYX_XAA_REQUIRE_DPOP` is `false` (the default) that grant accepts a bearer
@@ -206,6 +209,14 @@ VOUCHRYX_XAA_REQUIRE_DPOP "true" or "false" (default); requires a DPoP proof on
                           the jwt-bearer grant when true
 VOUCHRYX_ALLOWED_AUDIENCES comma-separated absolute URLs a token exchange may
                           issue a token for; unset, only VOUCHRYX_ISSUER
+VOUCHRYX_AGENTS           agents issued their own credential, one per line:
+                          `agent://td/path|unit|org|sha256:<64 hex>` (the digest
+                          of an enrolment key) or
+                          `agent://td/path|unit|org|workload:<issuer>#<subject>`;
+                          unset closes the client_credentials grant
+VOUCHRYX_WORKLOAD_ISSUERS `iss|aud|jwks-path` per cluster whose projected
+                          service-account tokens prove which agent is asking;
+                          required for every issuer VOUCHRYX_AGENTS binds to
 ```
 
 A missing or malformed value **aborts the process** and names the variable. A
@@ -346,6 +357,78 @@ A wrong client secret is refused with `401 {"error":"invalid_client"}` and a
 `WWW-Authenticate: Basic` header; the operator's log names the reason
 (`client_auth_failed`), the caller never sees it.
 
+## An agent's own credential
+
+The token exchange turns somebody else's tokens into a delegation; it cannot
+give an agent an identity of its own. `grant_type=client_credentials` (RFC 6749
+section 4.4) does: an agent enrolled in `VOUCHRYX_AGENTS` asks for a credential
+that lives five minutes, is bound to a key it proves it holds (RFC 9449), and
+names it, verified offline at every door that holds this service's key set.
+Closed while `VOUCHRYX_AGENTS` is unset.
+
+An agent proves who it is to this service, and only to this service, in
+exactly one of two ways:
+
+- **an enrolment key**, `client_secret_basic`, where this service holds only
+  the key's SHA-256 digest and compares in constant time. The client id is the
+  agent's `agent://` URI, so it must be form-urlencoded before the Basic
+  encoding, as RFC 6749 section 2.3.1 says (`agent%3A%2F%2Facme...`); the colon
+  in an unencoded URI would be read as the separator;
+- **a workload token**, inside a cluster: the projected service-account token
+  the kubelet already rotates, minted for this service's audience and
+  presented as an RFC 7523 client assertion
+  (`client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`).
+  It is verified with the cluster's key set from `VOUCHRYX_WORKLOAD_ISSUERS`,
+  with the key its `kid` names, the algorithm from the key type, exactly one
+  audience, at most an hour of life, and it maps to the one agent bound to its
+  `iss` and `sub`. No static secret exists anywhere.
+
+What comes back is the contract every door verifies:
+
+| where | value |
+|---|---|
+| header `typ` | `at+jwt` (RFC 9068), exactly, so it is never mistaken for a delegation token or an ID-JAG |
+| header `alg`, `kid` | `ES256`, this service's key |
+| `iss` | `VOUCHRYX_ISSUER` |
+| `sub`, `client_id` | the agent's `agent://` URI, both |
+| `aud` | one audience: the `resource` (or `audience`) asked for, from `VOUCHRYX_ALLOWED_AUDIENCES`; this service's issuer when none is asked |
+| `iat`, `exp` | at most five minutes apart, whatever `VOUCHRYX_TTL_SECONDS` says |
+| `jti` | random, for revocation |
+| `cnf.jkt` | the thumbprint of the key that signed the proof |
+| `unit`, `org` | from the agent's registry line |
+| `auth_src` | `enrolment-key`, or `workload:<issuer>` |
+
+No refresh token, and `token_type` is `DPoP`. An agent token presented as the
+`actor_token` of an exchange, once the operator lists this service's own
+issuer as trusted (invariant 13), carries its `unit` and `org` into the
+delegation; an identity provider's token never does.
+
+```bash
+# the credential field VOUCHRYX_AGENTS holds instead of the key
+echo "sha256:$(printf %s "$ENROLMENT_KEY" | sha256sum | cut -d' ' -f1)"
+```
+
+**Stopping an agent is one call**, and so is letting it back:
+
+```bash
+curl -s -X POST http://127.0.0.1:4310/v1/revoke \
+  -H "Authorization: Bearer $VOUCHRYX_REVOKE_KEY" \
+  -d '{"subject":"agent://acme/triage","ban":true,"actor":"user://acme/op","reason":"stopped"}'
+
+curl -s -X POST http://127.0.0.1:4310/v1/revoke/lift \
+  -H "Authorization: Bearer $VOUCHRYX_REVOKE_KEY" \
+  -d '{"subject":"agent://acme/triage","actor":"user://acme/op","reason":"fixed"}'
+```
+
+A ban is a subject revocation (every token naming the agent, anywhere in its
+chain, issued until now, dies at every door that polls the list) and a
+standing refusal of every grant to issue anything naming it again: its own
+credential, a delegation to or from it, an ID-JAG redemption. It is kept in
+`VOUCHRYX_REVOCATIONS_PATH` beyond its revocation's own expiry and survives a
+restart; the answer says `"durable": false` when no store is configured. A
+lift is written to the store before it takes effect, so a lift the disk
+refused leaves the ban standing.
+
 ## Where the crypto lives
 
 **Not here.** Signing, verification, the algorithm allowlist, the DPoP proof
@@ -405,11 +488,15 @@ them one at a time. The detail goes to the event stream.
 `delegation_issued` (info), `delegation_denied` (high), `delegation_revoked`
 (high), in the shared `taipanbox.dev/agent-event` envelope. Severity is fixed
 per type here exactly as it is in tokenfuse's own crate, so no call site can
-pick one.
+pick one. An agent's own credential is `delegation_issued` with
+`grant: "client_credentials"`, filed under the agent; a ban is
+`delegation_revoked` with `ban: true`. A lift writes no event, because none of
+the three types means "a ban ended"; its record is the store line and the log
+line, both written every time.
 
 ## Testing
 
-180 tests. Tier T3: these are authorization decisions where a wrong answer is
+222 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;
@@ -431,6 +518,13 @@ kind of practically unreachable branch the exchange handler already leaves
 uncovered). The JOSE, DPoP and chain coverage moved with the code to
 `agent-stack-go`.
 
+Re-measured 2026-10-18 with the same command after an agent's own credential
+and the ban landed: `agents` 95.5% (new), `api` 85.3% (83.9% before the
+change), `config` 94.4% (93.8%), `revoke` 87.8% (86.8%), `xaa` 95.0% and
+`demo` 72.4%, both unchanged. What stays uncovered in the new code is the same
+kind of branch: a bad random source and a signing failure in
+`tokenClientCredentials`.
+
 ```bash
 go test ./... -race
 go vet ./...
@@ -438,6 +532,7 @@ staticcheck ./...
 ./scripts/features-are-bound.sh
 ./scripts/readme-numbers.sh
 ./scripts/every-refusal-reaches-the-operator.sh
+./scripts/every-issuance-checks-the-ban.sh
 ./scripts/gates-have-teeth.sh    # needs a clean tree
 ```
 
@@ -505,6 +600,25 @@ Stated here rather than left to be discovered.
   the same shape the DPoP replay window already has: for one assertion's
   lifetime after a restart, a captured ID-JAG could be redeemed once more
   than it should be.
+- **No real cluster has presented a workload token here.** The workload path is
+  exercised against RS256 tokens the tests mint in the shape a kubelet writes;
+  no k3s or Kubernetes issuer's key set has been configured and no pod has
+  asked.
+- **The doors do not yet verify an agent token.** This service mints the
+  contract above; tokenfuse's doors accept it only once their own change
+  lands, and until then an agent token is accepted nowhere but here, as an
+  actor token.
+- **The `at+jwt` header is signed by a local copy of agent-stack-go's
+  signer**, because that library writes `typ: JWT` and takes no header. Every
+  token it mints is verified in the tests by the library's own verifier, so the
+  two cannot drift without a test going red; the copy goes when the library
+  grows a `typ` parameter.
+- **A ban without `VOUCHRYX_REVOCATIONS_PATH` is forgotten by a restart**, like
+  every revocation there; the answer says so (`"durable": false`).
+- **An enrolment key is readable by the agent process that holds it**, as any
+  bootstrap credential is; what it buys is one credential per agent, usable
+  only here, stopped at runtime by a ban. A workload token avoids the static
+  secret but is just as readable inside its pod.
 - **`client_secret_basic` is the only client authentication method.**
   `private_key_jwt`, which the MCP extension also names, is not implemented;
   a client that only supports it cannot use this grant.
@@ -518,6 +632,10 @@ Stated here rather than left to be discovered.
 - [x] `stack-up --with-delegation` brings it up in front of the gateway
 - [x] Cross App Access (RFC 7523 jwt-bearer, an ID-JAG in), closed while
       `VOUCHRYX_CLIENTS` is unset; `vouchryx-demo xaa` walks it from a shell
+- [x] An agent's own five-minute credential (`client_credentials`, DPoP
+      required), by enrolment key or by a cluster's workload token; closed
+      while `VOUCHRYX_AGENTS` is unset
+- [x] One-call stop: a ban that holds until lifted and survives a restart
 - [ ] An upper IdP in the sandbox; the profile mints a demo issuer instead
 - [x] Rooms in the other repos' shared stack diagram, which now includes Vouchryx
 

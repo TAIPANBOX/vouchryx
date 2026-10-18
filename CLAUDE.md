@@ -559,6 +559,131 @@ not a convenience.
     (`internal/config`); `TestAnEmptyAudienceInTrustedIssuersRefusesTheBinaryNamingTheIssuer`
     (`internal/manifest`, the built binary). Scenarios: `features/delegation.feature`)*
 
+23. **An agent's own credential comes from one grant, closed until an agent is
+    enrolled, and each agent proves itself one way.** `@decided 2026-10-18`:
+    every agent gets its own short-lived credential from this service, verified
+    offline at every door, bootstrapped by an enrolment key or, inside a
+    cluster, by the service-account token the platform already rotates. The
+    grant is `client_credentials` (RFC 6749 4.4) on `POST /v1/token`, and it
+    answers `unauthorized_client` to every call while `VOUCHRYX_AGENTS` is
+    unset. The order is fixed (`tokenClientCredentials`, `internal/api/
+    agents.go`): the agent authenticates by exactly one of its enrolment key
+    (`client_secret_basic`, the id and secret form-urlencoded first as RFC 6749
+    2.3.1 says, because the client id is an `agent://` URI; the key's SHA-256
+    compared in constant time with the registry's digest) or a workload token
+    (an RFC 7523 2.2 client assertion from a `VOUCHRYX_WORKLOAD_ISSUERS`
+    issuer, verified with the key its `kid` names, the algorithm from the key
+    type, exactly one audience, `sub`, `iat` and `exp` present, at most an hour
+    of life, mapped to the one agent bound to its `iss` and `sub`); every
+    failure there is `invalid_client` and reaches the log only. Then a DPoP
+    proof is REQUIRED; then the ban (invariant 25); then one audience from
+    `VOUCHRYX_ALLOWED_AUDIENCES` (invariant 22's list and matcher, this
+    service's issuer when none is asked). The enrolment key is never logged,
+    recorded or answered. A registry line this service cannot read in full,
+    a duplicate agent, a workload bound to two agents, or an agent bound to an
+    issuer `VOUCHRYX_WORKLOAD_ISSUERS` does not configure refuses the start,
+    and so does a workload issuer with an empty audience.
+    `VOUCHRYX_TRUSTED_ISSUERS` is required unless `VOUCHRYX_AGENTS` enrols an
+    agent, because a service for agents alone has no human identity provider
+    to trust. A workload token has no replay check, on purpose: a kubelet hands
+    a pod the same token for most of its life, possession of it is the
+    credential, and each request is made fresh by the DPoP proof.
+    `@claude 2026-10-18`, the details (the order, the encoding rule, no replay
+    check on the assertion, the conditional trusted issuers) are this
+    repository's reading of the decision, open to reversal.
+    *(tests: `TestAnEnrolledAgentGetsAShortLivedBoundAccessToken`,
+    `TestWithNoAgentsConfiguredTheClientCredentialsGrantRefusesEveryCall`,
+    `TestAWrongEnrolmentKeyGetsNoAgentToken`, `TestNoProofMeansNoAgentToken`,
+    `TestAWorkloadTokenGetsTheAgentItIsBoundToItsToken`,
+    `TestAWorkloadTokenForAnUnboundServiceAccountGetsNothing`,
+    `TestAnAgentUsesExactlyItsOwnCredentialKind`,
+    `TestTheEnrolmentKeyNeverReachesTheLogTheRecordOrTheResponse`,
+    `TestEveryAgentGrantRefusalReachesTheOperator` (`internal/api`);
+    `TestAWellFormedAgentTableParses`, `TestAMalformedAgentsLineIsRefused`,
+    `TestAWrongEnrolmentKeyAuthenticatesNobody`,
+    `TestAWorkloadTokenIsVerifiedAgainstItsIssuer`,
+    `TestAHostileOrWrongWorkloadTokenIsRefused` (`internal/agents`);
+    `TestAWellFormedAgentsAndWorkloadIssuersConfigComesUp`,
+    `TestWithNoAgentsConfiguredTheRegistryIsNil`,
+    `TestAMalformedAgentsLineRefusesToStart`,
+    `TestAnAgentBoundToAnUnconfiguredWorkloadIssuerRefusesToStart`,
+    `TestAWorkloadIssuerWithAnEmptyAudienceIsRefused`,
+    `TestTrustedIssuersAreOptionalOnlyWhenAgentsAreConfigured`
+    (`internal/config`); all red first. Scenarios:
+    `features/agent-credentials.feature`)*
+
+24. **The agent token's shape is a contract, because the doors verify it
+    offline.** The header is `typ: at+jwt` (RFC 9068), `alg: ES256` and this
+    service's `kid`; the claims are `iss`, `sub` and `client_id` (both the
+    agent), one `aud` (a string), `iat`, `exp` at most five minutes later
+    whatever `VOUCHRYX_TTL_SECONDS` says (a shorter one is honoured), `jti`,
+    `cnf.jkt` (the key that signed the proof), `unit`, `org` and `auth_src`
+    (`enrolment-key` or `workload:<iss>`); no `act`, no refresh token,
+    `token_type: DPoP`. A change to any of these is a change to what tokenfuse
+    and every other verifier reads, not a refactor. On a token exchange, the
+    delegation carries `unit` and `org` only from an actor token this service
+    minted (its own issuer and the `at+jwt` header), never from an identity
+    provider's token, which may claim either. The header is signed by
+    `signAccessToken`, a copy of agent-stack-go's `SignES256` that writes
+    `at+jwt` where the library writes `JWT`; the tests verify every token it
+    mints with the library's own `VerifyToken`, and the copy goes when the
+    library takes a `typ`.
+    *(tests: `TestAnEnrolledAgentGetsAShortLivedBoundAccessToken` asserts every
+    claim and header member by name, `TestAnAgentTokenLivesFiveMinutesWhateverTheConfiguredTTL`
+    (configures a one-hour TTL, because the default already equals the cap),
+    `TestAnAgentTokenAudienceComesFromTheAllowList`,
+    `TestAnExchangeCopiesUnitAndOrgFromTheAgentsOwnToken`,
+    `TestAnExchangeDoesNotCopyUnitFromAForeignActorToken`,
+    `TestTheMetadataAdvertisesClientCredentialsOnlyWhenAgentsAreConfigured`;
+    all red first. Scenarios: `features/agent-credentials.feature`)*
+
+25. **A ban stops a party with one call and holds until it is lifted.**
+    `@decided 2026-10-18`: stopping an agent is one action that holds until
+    somebody lifts it and survives a restart. `POST /v1/revoke` with
+    `"ban": true` and a `subject` (never a `jti`: `ban_names_a_subject_only`)
+    is an ordinary subject revocation, so every token naming the party issued
+    until now dies at every door that polls the list, PLUS a standing refusal
+    that every issuance path asks before it signs: the client_credentials
+    grant (`agent_banned`), the token exchange about every party of the chain
+    and the actor (`party_banned`), and Cross App Access about the user and
+    the client's agent (`party_banned`). Invariant 7 is unchanged for every
+    entry without the flag: revoking is still not banning. A ban is kept in
+    `VOUCHRYX_REVOCATIONS_PATH` past its own revocation's expiry (compaction
+    keeps it, `Loaded.Standing` restores it); without a store the answer says
+    `"durable": false`. `POST /v1/revoke/lift` (the same keys, an actor and a
+    reason, a subject that IS banned, `subject_not_banned` otherwise) writes to
+    the disk BEFORE it lifts, so a lift the disk refused answers 503 and the
+    ban stands; it never un-revokes what the party held. A lift writes no
+    agent-event, because SPEC 6.2's three types for this service have none for
+    a ban ending; the store line and the log line are its record. And an actor
+    token the list revokes issues nothing (`actor_revoked`): without that, a
+    revoked agent's still-unexpired credential, presented as the actor, came
+    back as a delegation minted after the revocation, which the list does not
+    cover. `@claude 2026-10-18`, the details (the ban as a flag on a subject
+    entry, the lift ordering, no lift event) are this repository's reading.
+    *(gate: `scripts/every-issuance-checks-the-ban.sh`, which discovers every
+    function under `internal/api` that signs a token and requires a `.Banned(`
+    call earlier in the same function, six cases in `gates-have-teeth.sh`
+    (one per grant, a check left only in a comment, no signer left to judge,
+    and a non-fault). Tests: `TestABannedAgentGetsNoAgentToken`,
+    `TestABanRevokesTheTokensTheAgentAlreadyHolds`,
+    `TestALiftedBanLetsTheAgentBackButKeepsItsOldTokensRevoked`,
+    `TestALiftNeedsARevokeKeyAnActorAndAReason`, `TestABanNamesASubjectOnly`,
+    `TestABanTheDiskRefusedStaysInForce`,
+    `TestALiftTheDiskRefusedLeavesTheBanInForce`,
+    `TestAnExchangeWithARevokedActorTokenIssuesNothing`,
+    `TestAnExchangeNamingABannedPartyIssuesNothing`,
+    `TestAnIdJagForABannedAgentIsRefused` (`internal/api`);
+    `TestABanIsASubjectRevocationThatAlsoStands`,
+    `TestAnOrdinaryRevocationIsNotABan`,
+    `TestALiftEndsTheBanButNotTheRevocation`,
+    `TestABanAndItsLiftSurviveAReopen`,
+    `TestALiftedBansRevocationOutlivesTheLiftAcrossAReopen`,
+    `TestAMalformedBanOrLiftLineRefusesToOpen` (`internal/revoke`);
+    `TestAnAgentIsStoppedAndLetBackAcrossARealRestart` (`internal/manifest`,
+    the built binary, killed with SIGKILL between the ban and the lift); all
+    red first. Scenarios: `features/agent-credentials.feature`)*
+
 ## Distribution
 
 Published as a container image, `ghcr.io/taipanbox/vouchryx`, built by

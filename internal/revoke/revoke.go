@@ -74,6 +74,15 @@ type Entry struct {
 	// outage somebody has to reconstruct from timing.
 	Actor  string `json:"actor"`
 	Reason string `json:"reason"`
+	// Ban makes this subject entry ALSO a standing refusal to issue anything
+	// naming the subject, until a Lift line removes it (CLAUDE.md invariant
+	// 25). The revocation half (IssuedBefore, Expires) behaves exactly like an
+	// ordinary subject entry and expires with it; the ban does not expire.
+	// Invariant 7 is unchanged for every entry without this flag.
+	Ban bool `json:"ban,omitempty"`
+	// Lift is a store line, never a list entry: the ban on Subject ends here.
+	// It names a subject, an actor and a reason, and nothing else.
+	Lift bool `json:"lift,omitempty"`
 }
 
 // PublicEntry is one revocation as the PUBLIC list serves it: exactly what a
@@ -127,6 +136,10 @@ func Public(entries []Entry) []PublicEntry {
 type List struct {
 	mu      sync.Mutex
 	entries []Entry
+	// bans holds every standing ban, by subject, for as long as it stands:
+	// past the expiry of its own revocation half, and pruned by nothing but
+	// Lift.
+	bans map[string]Entry
 }
 
 func New() *List { return &List{} }
@@ -152,6 +165,10 @@ var ErrListFull = errors.New("revocation list is at its ceiling")
 // injected clock in the past an entry added now is pruned at once. A test about
 // revocation runs on the wall clock for that reason; known, and left so rather
 // than threading a clock into a path that has one caller.
+//
+// A ban entry (e.Ban) also records the standing ban on its subject; one whose
+// revocation half has already expired (a ban restored from the store long
+// after it was made) records the ban and adds no list entry.
 func (l *List) Add(e Entry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -163,11 +180,30 @@ func (l *List) Add(e Entry) error {
 		}
 	}
 	l.entries = kept
+	if e.Ban {
+		if _, standing := l.bans[e.Subject]; !standing && len(l.bans) >= MaxEntries {
+			return ErrListFull
+		}
+		if e.Expires <= now {
+			l.recordBan(e)
+			return nil
+		}
+	}
 	if len(l.entries) >= MaxEntries {
 		return ErrListFull
 	}
 	l.entries = append(l.entries, e)
+	if e.Ban {
+		l.recordBan(e)
+	}
 	return nil
+}
+
+func (l *List) recordBan(e Entry) {
+	if l.bans == nil {
+		l.bans = map[string]Entry{}
+	}
+	l.bans[e.Subject] = e
 }
 
 // Active returns the entries still worth checking, oldest expiry first.
@@ -221,4 +257,50 @@ func (l *List) RevokedAny(jti string, parties []string, issuedAt int64, now time
 		}
 	}
 	return Entry{}, false
+}
+
+// Banned reports whether any of these parties stands banned, and by which
+// ban, first hit in the order given. Every issuance path asks it about every
+// party it is about to put in a token (invariant 25, gate
+// scripts/every-issuance-checks-the-ban.sh).
+func (l *List) Banned(parties []string) (Entry, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, p := range parties {
+		if e, ok := l.bans[p]; ok && p != "" {
+			return e, true
+		}
+	}
+	return Entry{}, false
+}
+
+// Lift ends the ban on subject and answers whether there was one. It never
+// un-revokes: the subject's revocation half stays in force until its own
+// expiry, as an ordinary subject entry, so the tokens the subject held when it
+// was banned stay dead.
+func (l *List) Lift(subject string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.bans[subject]; !ok {
+		return false
+	}
+	delete(l.bans, subject)
+	for i := range l.entries {
+		if l.entries[i].Subject == subject {
+			l.entries[i].Ban = false
+		}
+	}
+	return true
+}
+
+// Bans returns every standing ban, sorted by subject.
+func (l *List) Bans() []Entry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]Entry, 0, len(l.bans))
+	for _, e := range l.bans {
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Subject < out[j].Subject })
+	return out
 }

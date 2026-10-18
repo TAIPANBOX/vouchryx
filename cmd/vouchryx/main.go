@@ -11,13 +11,16 @@
 //	VOUCHRYX_ADDR             where to listen (default 127.0.0.1:4310)
 //	VOUCHRYX_ISSUER           the `iss` this service puts on every token
 //	VOUCHRYX_SIGNING_KEY      PEM EC private key; ES256 is what it issues
-//	VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path` per line
+//	VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path` per line; optional once VOUCHRYX_AGENTS enrols an agent
 //	VOUCHRYX_TTL_SECONDS      default 300, capped at one hour
 //	VOUCHRYX_EVENTS_PATH      agent-event NDJSON, optional
 //	VOUCHRYX_REVOCATIONS_PATH where revocations are kept across a restart, optional
 //	VOUCHRYX_CLIENTS          Cross App Access client table, optional; unset closes the grant
 //	VOUCHRYX_RESOURCES        Cross App Access resources, required once VOUCHRYX_CLIENTS is set
 //	VOUCHRYX_XAA_REQUIRE_DPOP "true" or "false" (default), optional
+//	VOUCHRYX_ALLOWED_AUDIENCES audiences a token may be issued for, optional
+//	VOUCHRYX_AGENTS           agents issued their own credential, optional; unset closes client_credentials
+//	VOUCHRYX_WORKLOAD_ISSUERS `iss|aud|jwks-path` per cluster whose service-account tokens prove an agent
 package main
 
 import (
@@ -67,7 +70,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "vouchryx: refusing to start: %v\n", err)
 			os.Exit(2)
 		}
-		for _, e := range got.Active {
+		// Every active entry, and every ban that still stands after its own
+		// revocation half expired (invariant 25): a restart that restored the
+		// first and not the second would let a stopped agent back in.
+		for _, e := range append(append([]revoke.Entry{}, got.Active...), got.Standing...) {
 			if err := revs.Add(e); err != nil {
 				fmt.Fprintf(os.Stderr, "vouchryx: refusing to start: restoring %s: %v\n", cfg.RevocationsPath, err)
 				os.Exit(2)
@@ -77,8 +83,8 @@ func main() {
 			log.Printf("vouchryx: discarded a half-written last revocation in %s; no caller was told it was durable",
 				cfg.RevocationsPath)
 		}
-		log.Printf("vouchryx: restored %d active revocation(s) from %s, dropped %d expired",
-			len(got.Active), cfg.RevocationsPath, got.Expired)
+		log.Printf("vouchryx: restored %d active revocation(s) and %d standing ban(s) from %s, dropped %d expired",
+			len(got.Active), len(revs.Bans()), cfg.RevocationsPath, got.Expired)
 		defer func() { _ = st.Close() }()
 		// Assigned only here, where st is known non-nil: a nil *revoke.Store in
 		// the interface field would make `s.Store != nil` true and the first
@@ -105,6 +111,14 @@ func main() {
 			len(cfg.XAAResources), cfg.XAARequireDPoP)
 	} else {
 		log.Printf("vouchryx: VOUCHRYX_CLIENTS is unset, so the jwt-bearer grant (Cross App Access) " +
+			"answers unauthorized_client to every call")
+	}
+
+	if cfg.Agents != nil {
+		log.Printf("vouchryx: the client_credentials grant is open: %d agent(s) enrolled, %d workload issuer(s)",
+			cfg.Agents.Len(), len(cfg.Workloads))
+	} else {
+		log.Printf("vouchryx: VOUCHRYX_AGENTS is unset, so the client_credentials grant " +
 			"answers unauthorized_client to every call")
 	}
 

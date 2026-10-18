@@ -19,7 +19,7 @@
   ],
   "schema": "taipanbox.dev/components/v1",
   "repo": "TAIPANBOX/vouchryx",
-  "distribution": "ghcr.io/taipanbox/vouchryx, published by .github/workflows/release.yml on a v* tag push (linux/amd64 and linux/arm64, signed keyless with cosign, SBOM and build-provenance attestation attached); first tag v0.1.0, the delegation token issuer and revocation list the stack launchers run",
+  "distribution": "ghcr.io/taipanbox/vouchryx, published by .github/workflows/release.yml on a v* tag push (linux/amd64 and linux/arm64, signed keyless with cosign, SBOM and build-provenance attestation attached); first tag v0.1.0, the delegation token issuer, agent credential issuer and revocation list the stack launchers run",
   "components": [
     {
       "name": "vouchryx",
@@ -40,13 +40,15 @@
           "VOUCHRYX_CLIENTS": { "required": false },
           "VOUCHRYX_RESOURCES": { "required": false },
           "VOUCHRYX_XAA_REQUIRE_DPOP": { "required": false },
-          "VOUCHRYX_ALLOWED_AUDIENCES": { "required": false }
+          "VOUCHRYX_ALLOWED_AUDIENCES": { "required": false },
+          "VOUCHRYX_AGENTS": { "required": false },
+          "VOUCHRYX_WORKLOAD_ISSUERS": { "required": false }
         },
         "missing_required_exit_code": 2
       },
       "declared": {
         "role": {
-          "value": "the delegation plane: RFC 8693 token exchange, and the revocation list every enforcement point polls",
+          "value": "the delegation plane: RFC 8693 token exchange, an agent's own short-lived credential (client_credentials), and the revocation list every enforcement point polls",
           "why": "a sentence about purpose is not a property of the source"
         },
         "key_material": {
@@ -80,6 +82,18 @@
         "allowed_audiences_default": {
           "value": "unset: a token exchange may issue a token for this service's own issuer and for no other audience",
           "why": "optional because making it required would stop every existing bring-up, and the unset behaviour is the one a launcher can rely on without configuring anything: the exchange issues for its own issuer, which is what a request with no audience already got. A caller asking for any other audience is refused with invalid_target until the operator lists it here, which is the decision F-013 closed; it is a list an operator writes, not a value this service can infer."
+        },
+        "agents_default": {
+          "value": "unset: the client_credentials grant (an agent's own five-minute credential) answers unauthorized_client to every call",
+          "why": "optional because making it required would stop every existing bring-up; a launcher that issues its agents their own credential enrols each one here, by the SHA-256 digest of an enrolment key it minted or by a workload binding (CLAUDE.md invariant 23)"
+        },
+        "workload_issuers_default": {
+          "value": "unset: no cluster's service-account token proves anything here, and an agent bound to a workload issuer refuses the start",
+          "why": "optional because only a launcher running agents in a cluster has a workload issuer to name; required in effect once VOUCHRYX_AGENTS binds an agent to one, which internal/config refuses otherwise, a conditional rule this manifest's required/optional split cannot express"
+        },
+        "trusted_issuers_conditional": {
+          "value": "required unless VOUCHRYX_AGENTS enrols at least one agent",
+          "why": "declared required above because it is required in every environment that does not enrol agents, which is the base one this manifest's tests start the binary in; a service issuing only agents' own credentials has no human identity provider to trust, and making it invent one would make it configure a trust it does not want (CLAUDE.md invariant 23). internal/config's TestTrustedIssuersAreOptionalOnlyWhenAgentsAreConfigured and internal/manifest's TestAnAgentIsStoppedAndLetBackAcrossARealRestart hold both halves."
         }
       }
     },
