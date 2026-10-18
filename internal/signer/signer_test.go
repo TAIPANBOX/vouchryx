@@ -185,7 +185,9 @@ func TestAnExpiredStatementIsNeverUsedToSign(t *testing.T) {
 	// library's clock alone is one bug away from signing with a dead key.
 	e := newEntry(t, base.Add(-72*time.Hour), base.Add(-time.Second))
 	fk := &fakeKeys{cur: e}
-	d := newDelegated(fk, fakeJWKS{}, nil, clockAt(base))
+	// Served, so that the window is the only thing that can refuse it here.
+	served := fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{e.keyFor().JWK}}}
+	d := newDelegated(fk, served, nil, clockAt(base))
 	_, _, err := d.Sign(func(string) []byte { return []byte("x") })
 	if !errors.Is(err, ErrNotCertified) {
 		t.Fatalf("a statement that ran out was used to sign: err %v", err)
