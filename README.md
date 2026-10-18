@@ -131,13 +131,13 @@ on the request path of every enforcement point at once.
 
 ## Install
 
-Pull the published image (`ghcr.io/taipanbox/vouchryx:v0.3.0`, built for
+Pull the published image (`ghcr.io/taipanbox/vouchryx:v0.4.0`, built for
 `linux/amd64` and `linux/arm64` by `.github/workflows/release.yml`, signed
 keyless and carrying an SBOM and a provenance attestation), or build from
 source.
 
 ```sh
-docker pull ghcr.io/taipanbox/vouchryx:v0.3.0
+docker pull ghcr.io/taipanbox/vouchryx:v0.4.0
 
 docker run --rm -p 4310:4310 \
   -e VOUCHRYX_ADDR=0.0.0.0:4310 \
@@ -145,7 +145,7 @@ docker run --rm -p 4310:4310 \
   -e VOUCHRYX_SIGNING_KEY=/keys/signing.pem \
   -e VOUCHRYX_TRUSTED_ISSUERS='https://idp.example.com|https://vouchryx.example.com|/keys/idp.jwks.json' \
   -v "$(pwd)/keys":/keys:ro \
-  ghcr.io/taipanbox/vouchryx:v0.3.0
+  ghcr.io/taipanbox/vouchryx:v0.4.0
 ```
 
 The three required variables are `VOUCHRYX_ISSUER`, `VOUCHRYX_SIGNING_KEY` and
@@ -172,10 +172,10 @@ attestation and an SBOM, from the first tag on. With `cosign` and `gh`
 installed:
 
 ```sh
-cosign verify ghcr.io/taipanbox/vouchryx:v0.3.0 \
+cosign verify ghcr.io/taipanbox/vouchryx:v0.4.0 \
   --certificate-identity-regexp '^https://github.com/TAIPANBOX/vouchryx/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-gh attestation verify oci://ghcr.io/taipanbox/vouchryx:v0.3.0 -R TAIPANBOX/vouchryx
+gh attestation verify oci://ghcr.io/taipanbox/vouchryx:v0.4.0 -R TAIPANBOX/vouchryx
 ```
 
 ## Configuration
@@ -225,7 +225,7 @@ healthy; one that came up trusting a default would issue everything.
 
 ## Walking the loop
 
-The Surface table above documents six endpoints, and until 2026-08-27 nothing
+The Surface table above documents seven endpoints, and until 2026-08-27 nothing
 outside this repository's own tests could call them: an RFC 8693 exchange takes
 two signed input tokens and a DPoP proof whose public key travels in the JWS
 header, which is a JOSE client before it is a curl command. The driver that
