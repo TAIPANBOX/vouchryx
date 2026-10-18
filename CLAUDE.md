@@ -742,7 +742,9 @@ not a convenience.
     Every token is signed by `internal/signer`, and nothing else in this
     repository signs one (gate). The signer reads the key's window itself and
     refuses a key past its `not_after`, even when the library that handed the key
-    over had a different idea of the time. With no certified key a token request
+    over had a different idea of the time. It also uses a key only once the set
+    this service serves holds it (published before it signs): a key Keyryx has
+    certified but the cache has not yet fetched is refused, found by a live run. With no certified key a token request
     is refused, never signed by the file key: the file key is not a fallback. The
     served key set is Keyryx's published set, plus the file key's public half only
     while `VOUCHRYX_SIGNING_KEY` is set in keyryx mode (the overlap), and a key both
@@ -758,7 +760,8 @@ not a convenience.
     `TestTheFileKeyIsNeverUsedWhenNoStatementIsValid`,
     `TestTheSignedKidIsTheKidTheHeaderNames`,
     `TestThePublishedSetIsKeyryxsSetAndTheOverlapKeyOnce`,
-    `TestTheWorkingKeyIsCertifiedAtStart` (`internal/signer`);
+    `TestTheWorkingKeyIsCertifiedAtStart`,
+    `TestAKeyIsNotUsedUntilItIsInTheServedSet` (`internal/signer`);
     `TestTheFileSignerIsTheDefault`, `TestKeyryxModeNeedsItsURLAndItsConsumer`,
     `TestKeyryxModeNeedsNoFileKey`, `TestAKeyryxSettingWithoutKeyryxModeIsRefused`,
     `TestAnUnknownSignerIsRefused`, `TestFileModeStillRequiresItsKey`

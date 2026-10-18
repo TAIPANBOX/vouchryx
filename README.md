@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-310-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-311-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -510,7 +510,7 @@ line, both written every time.
 
 ## Testing
 
-254 tests. Tier T3: these are authorization decisions where a wrong answer is
+255 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;
@@ -601,6 +601,9 @@ Stated here rather than left to be discovered.
 - **A failed certification is retried on keyclient's fixed five-minute wait.** A
   Keyryx that comes back is used within that wait; the service issues nothing
   until then.
+- **A fresh key is used only after this service's cache holds it.** The cache is
+  refreshed every ten seconds, so a new certification waits up to that long
+  before the first token, and health answers `503` meanwhile.
 - **`/healthz` is a readiness signal in keyryx mode.** It answers `503` while no
   working key is certified. A liveness probe on that path would restart the
   process while Keyryx is down, and the restart would not help.

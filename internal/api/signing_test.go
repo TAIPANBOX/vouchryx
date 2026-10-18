@@ -28,7 +28,7 @@ import (
 // a fake Keyryx certifies. overlap publishes the stand's file key beside it, as
 // the migration does. certify has the key certified at once, as a started
 // service would have it after its first renewal.
-func newKeyryxStand(t *testing.T, overlap, certify bool) (*stand, *keyryxtest.Server, *keyclient.Delegated) {
+func newKeyryxStand(t *testing.T, overlap, certify bool) (*stand, *keyryxtest.Server, *keyclient.Delegated, *keyclient.JWKS) {
 	t.Helper()
 	s := newStand(t)
 	clock := func() time.Time { return s.now }
@@ -65,7 +65,7 @@ func newKeyryxStand(t *testing.T, overlap, certify bool) (*stand, *keyryxtest.Se
 		overlapKey = &k
 	}
 	s.srv.Signer = signer.NewDelegated(d, j, overlapKey, clock)
-	return s, fake, d
+	return s, fake, d, j
 }
 
 // currentKid is the kid of the working key valid now, as the signer sees it.
@@ -138,7 +138,7 @@ func contains(xs []string, x string) bool {
 }
 
 func TestATokenIsSignedWithTheWorkingKeyKeyryxCertified(t *testing.T) {
-	s, fake, d := newKeyryxStand(t, false, true)
+	s, fake, d, _ := newKeyryxStand(t, false, true)
 	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-1"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the exchange was refused with a certified key: %d %s", rec.Code, rec.Body.String())
@@ -155,7 +155,7 @@ func TestATokenIsSignedWithTheWorkingKeyKeyryxCertified(t *testing.T) {
 func TestNoTokenIsIssuedBeforeAKeyIsCertifiedEvenWithAFileKeyPresent(t *testing.T) {
 	// The file key is still configured, and published for the overlap. It must not
 	// sign: with no certified key the answer is a refusal, never a token.
-	s, _, _ := newKeyryxStand(t, true, false)
+	s, _, _, _ := newKeyryxStand(t, true, false)
 	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-2"))
 	if rec.Code != http.StatusServiceUnavailable || body["error"] != "temporarily_unavailable" {
 		t.Fatalf("with no certified key the exchange answered %d %s, want 503 temporarily_unavailable",
@@ -164,7 +164,7 @@ func TestNoTokenIsIssuedBeforeAKeyIsCertifiedEvenWithAFileKeyPresent(t *testing.
 }
 
 func TestNoTokenIsIssuedOnceTheStatementHasRunOut(t *testing.T) {
-	s, _, _ := newKeyryxStand(t, false, true)
+	s, _, _, _ := newKeyryxStand(t, false, true)
 	s.advance(73 * time.Hour) // the statement is for 72 hours and has not been renewed
 	rec, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-3"))
 	if rec.Code != http.StatusServiceUnavailable {
@@ -173,11 +173,14 @@ func TestNoTokenIsIssuedOnceTheStatementHasRunOut(t *testing.T) {
 }
 
 func TestTheHealthRouteSaysWhenNoKeyIsCertified(t *testing.T) {
-	s, _, d := newKeyryxStand(t, false, false)
+	s, _, d, j := newKeyryxStand(t, false, false)
 	if w := get(s, "/healthz"); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("health answered %d before any key was certified, want 503", w.Code)
 	}
 	if _, err := d.RenewIfDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if w := get(s, "/healthz"); w.Code != http.StatusOK {
@@ -186,7 +189,7 @@ func TestTheHealthRouteSaysWhenNoKeyIsCertified(t *testing.T) {
 }
 
 func TestTheJWKSRouteServesKeyryxsSetAndTheFileKeyOnlyDuringTheOverlap(t *testing.T) {
-	overlapped, _, d := newKeyryxStand(t, true, true)
+	overlapped, _, d, _ := newKeyryxStand(t, true, true)
 	kids := servedKids(t, overlapped)
 	fileKid := overlapped.srv.Cfg.KeyID
 	if !contains(kids, currentKid(t, d)) || !contains(kids, fileKid) || len(kids) != 2 {
@@ -194,7 +197,7 @@ func TestTheJWKSRouteServesKeyryxsSetAndTheFileKeyOnlyDuringTheOverlap(t *testin
 			kids, currentKid(t, d), fileKid)
 	}
 
-	plain, _, d2 := newKeyryxStand(t, false, true)
+	plain, _, d2, _ := newKeyryxStand(t, false, true)
 	kids = servedKids(t, plain)
 	if len(kids) != 1 || kids[0] != currentKid(t, d2) {
 		t.Fatalf("without the overlap the served set is %v, want exactly Keyryx's key %s", kids, currentKid(t, d2))
@@ -202,7 +205,7 @@ func TestTheJWKSRouteServesKeyryxsSetAndTheFileKeyOnlyDuringTheOverlap(t *testin
 }
 
 func TestTheWorkingKeyIsRenewedAtHalfLifeAndTheNewKeySignsAfterIt(t *testing.T) {
-	s, fake, d := newKeyryxStand(t, false, true)
+	s, fake, d, j := newKeyryxStand(t, false, true)
 	first := currentKid(t, d)
 	s.advance(36 * time.Hour) // half of the statement's 72 hours
 	renewed, err := d.RenewIfDue(context.Background())
@@ -211,6 +214,9 @@ func TestTheWorkingKeyIsRenewedAtHalfLifeAndTheNewKeySignsAfterIt(t *testing.T) 
 	}
 	if n := fake.Delegations(); n != 2 {
 		t.Fatalf("Keyryx certified %d key(s), want 2", n)
+	}
+	if err := j.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-4"))
 	if rec.Code != http.StatusOK {

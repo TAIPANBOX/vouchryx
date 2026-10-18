@@ -168,7 +168,8 @@ func TestTheJWSHasTheLibrarysHeaderAndPayload(t *testing.T) {
 
 func TestAWorkingKeyTokenNamesTheKeyItWasSignedWith(t *testing.T) {
 	e := newEntry(t, base, base.Add(72*time.Hour))
-	d := newDelegated(&fakeKeys{cur: e}, fakeJWKS{}, nil, clockAt(base))
+	served := fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{e.keyFor().JWK}}}
+	d := newDelegated(&fakeKeys{cur: e}, served, nil, clockAt(base))
 	tok, err := JWS(d, "at+jwt", map[string]any{"sub": "agent://acme/triage"})
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +216,8 @@ func TestTheSignedKidIsTheKidTheHeaderNames(t *testing.T) {
 	// the valid one. The header must name the key that signed, so the signer
 	// retries rather than pairing one kid with another key's signature.
 	rk := &raceKeys{first: newEntry(t, base.Add(-time.Hour), base.Add(time.Hour)), second: newEntry(t, base, base.Add(time.Hour))}
-	d := newDelegated(rk, fakeJWKS{}, nil, clockAt(base))
+	both := fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{rk.first.keyFor().JWK, rk.second.keyFor().JWK}}}
+	d := newDelegated(rk, both, nil, clockAt(base))
 	var built string
 	kid, _, err := d.Sign(func(k string) []byte {
 		built = k
@@ -273,6 +275,33 @@ func has(keys []delegation.JWK, kid string) bool {
 	return false
 }
 
+// --- publish before sign ----------------------------------------------------
+
+func TestAKeyIsNotUsedUntilItIsInTheServedSet(t *testing.T) {
+	// Keyryx certifies the working key at once, but this service's own key set is
+	// refreshed on a timer. Until the key is in the set this service serves, a
+	// verifier cannot verify a token made with it, so the signer must not use it
+	// yet: the design's "published before it signs". Found by running the real
+	// keyryx binary (the start-up race), after the red commit.
+	e := newEntry(t, base, base.Add(72*time.Hour))
+	fk := &fakeKeys{cur: e}
+	jw := &fakeJWKS{}
+	d := newDelegated(fk, jw, nil, clockAt(base))
+	if err := d.Ready(); !errors.Is(err, ErrNotCertified) {
+		t.Fatalf("a key that is not in the served set is reported ready: %v", err)
+	}
+	if _, _, err := d.Sign(func(string) []byte { return []byte("x") }); !errors.Is(err, ErrNotCertified) {
+		t.Fatalf("a key that is not in the served set signed: err %v", err)
+	}
+	if fk.signs != 0 {
+		t.Fatalf("the library signed %d time(s) with a key the served set does not hold", fk.signs)
+	}
+	jw.set = delegation.Set{Keys: []delegation.JWK{e.keyFor().JWK}}
+	if err := d.Ready(); err != nil {
+		t.Fatalf("once the key is in the served set it is not ready: %v", err)
+	}
+}
+
 // --- the start-up path ------------------------------------------------------
 
 func TestTheWorkingKeyIsCertifiedAtStart(t *testing.T) {
@@ -302,12 +331,12 @@ func TestTheWorkingKeyIsCertifiedAtStart(t *testing.T) {
 	StartDelegated(ctx, d, j, func(err error) { t.Logf("signer: %v", err) })
 
 	sg := NewDelegated(d, j, nil, time.Now)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if sg.Ready() == nil {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("the working key was not certified within five seconds of start: %v", sg.Ready())
+	t.Fatalf("the working key was not certified and served within thirty seconds of start: %v", sg.Ready())
 }

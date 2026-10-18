@@ -29,10 +29,11 @@ const KeyName = "vouchryx"
 // Lifetime is the life Keyryx is asked to certify the working key for.
 const Lifetime = 72 * time.Hour
 
-// PollEvery is how often the cached key set is refreshed from Keyryx. It must
-// stay well under half of Keyryx's publish-ahead, so a new key is in this
-// service's served set before it can sign.
-const PollEvery = 2 * time.Minute
+// PollEvery is how often the cached key set is refreshed from Keyryx. A key is
+// not used until the served set holds it, so this is also the longest a freshly
+// certified key waits before it can sign. It stays far under Keyryx's
+// publish-ahead, which the poll must beat for a renewed key to be served in time.
+const PollEvery = 10 * time.Second
 
 // ErrNotCertified means this signer holds no key it may sign with right now:
 // none has been certified, or the last one has run out. Signing fails closed.
@@ -174,6 +175,11 @@ func (d *Delegated) current() (keyclient.Key, error) {
 	now := d.now()
 	if now.Before(k.NotBefore) || !now.Before(k.NotAfter) {
 		return keyclient.Key{}, fmt.Errorf("%w: the key's statement is not valid at %s", ErrNotCertified, now.UTC().Format(time.RFC3339))
+	}
+	// A key is used only once the set this service serves holds it: until then no
+	// verifier can check a token made with it. Published before it signs.
+	if !hasKid(d.jwks.Set().Keys, k.Kid) {
+		return keyclient.Key{}, fmt.Errorf("%w: the key is certified but not yet in the served set", ErrNotCertified)
 	}
 	return k, nil
 }

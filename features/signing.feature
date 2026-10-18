@@ -41,6 +41,12 @@ Feature: A token is signed by the key Keyryx certified, or by nothing
     When the renewal falls due and a caller asks for a token
     Then Keyryx has certified a second key and the token is signed by it
 
+  # @test:TestAKeyIsNotUsedUntilItIsInTheServedSet
+  Scenario: A certified key is not used until a verifier can find it in the key set
+    Given Keyryx has certified the working key, and this service's key set does not hold it yet
+    When a caller asks for a token
+    Then the key is not used, and it is used once the key set holds it
+
   # @test:TestWithTheFileSignerNothingChanges
   Scenario: Without the setting, the file key signs as it always did
     Given no signer is configured, and a key file is
