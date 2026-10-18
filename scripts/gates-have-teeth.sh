@@ -137,8 +137,10 @@ fault "refusals: one routed around the funnel in xaa.go specifically" \
 # The subject list is DISCOVERED, so a gate that can no longer find a single
 # response must say it measured nothing rather than pass over an empty set.
 # Every file the gate reads, not only api.go: see fault_all_multi, above.
+# agents.go joined the list with the client_credentials grant; without it here
+# this case went toothless the day that file started writing responses.
 fault_all_multi "refusals: the responses it reads are gone" \
-  "internal/api/api.go internal/api/xaa.go" 'writeJSON(' 'writeBody(' \
+  "internal/api/api.go internal/api/xaa.go internal/api/agents.go" 'writeJSON(' 'writeBody(' \
   fail ./scripts/every-refusal-reaches-the-operator.sh
 
 # And it must not fire on a success, which is most of what the surface writes.
