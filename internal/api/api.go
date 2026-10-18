@@ -275,6 +275,15 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 		deny(holder, "subject_key_mismatch", map[string]any{"bound_to": subjectJKT, "presented": thumb})
 		return
 	}
+	// An UNBOUND subject token has no key for the presenter to be checked against.
+	// Nothing else in this path stands in for that check, so the only thing that
+	// may let one through is the operator's marker on its issuer (invariant 26).
+	// Any other unbound token is a bearer token: a captured copy exchanges for
+	// anyone holding any key.
+	if subjectJKT == "" && !s.Cfg.IssuesUnbound(subIss) {
+		deny(holder, "subject_unbound", map[string]any{"iss": subIss})
+		return
+	}
 
 	// A REVOKED subject token issues nothing. The list every enforcement point
 	// polls was not consulted by the door that issues, so a revoked token could
@@ -462,6 +471,12 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 	}
 	if subJTI != "" {
 		issued["subject_jti"] = subJTI
+	}
+	// The subject carried no key, and its issuer is marked as one that sends
+	// such tokens. The token is bound to the presenter's proof key as always;
+	// this only records that the subject itself was not bound (invariant 26).
+	if subjectJKT == "" {
+		issued["subject_unbound"] = true
 	}
 	s.emit("delegation_issued", actorSub, recorded, issued)
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -11,7 +11,7 @@
 //	VOUCHRYX_ADDR             where to listen (default 127.0.0.1:4310)
 //	VOUCHRYX_ISSUER           the `iss` this service puts on every token
 //	VOUCHRYX_SIGNING_KEY      PEM EC private key; ES256 is what it issues
-//	VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path` per line; optional once VOUCHRYX_AGENTS enrols an agent
+//	VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path[|unbound]` per line; optional once VOUCHRYX_AGENTS enrols an agent
 //	VOUCHRYX_TTL_SECONDS      default 300, capped at one hour
 //	VOUCHRYX_EVENTS_PATH      agent-event NDJSON, optional
 //	VOUCHRYX_REVOCATIONS_PATH where revocations are kept across a restart, optional

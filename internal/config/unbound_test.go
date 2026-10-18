@@ -49,7 +49,7 @@ func TestAFourthFieldOtherThanUnboundRefusesToStart(t *testing.T) {
 	// `bound` is the tempting word, and a typo of `unbound` is the likely one.
 	// Neither may be read as the marker, and neither may be read as part of
 	// the JWKS path: the operator has to be told which field is wrong.
-	for _, field := range []string{"bound", "unbound "} {
+	for _, field := range []string{"bound", "Unbound", "unbound|extra"} {
 		env := baseXAAEnv(t)
 		env["VOUCHRYX_TRUSTED_ISSUERS"] = "https://idp.acme.example|https://vouchryx.acme.example|" + jwksFile(t, "idp-1") + "|" + field
 		withEnv(t, env, func() {

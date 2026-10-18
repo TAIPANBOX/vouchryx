@@ -684,6 +684,48 @@ not a convenience.
     the built binary, killed with SIGKILL between the ban and the lift); all
     red first. Scenarios: `features/agent-credentials.feature`)*
 
+26. **A subject token that carries no key is exchanged only when its issuer is
+    marked as one that sends such tokens.** `@decided 2026-10-17`: the findings of
+    the agent-security review are closed in the wave they were assigned to,
+    F-013's unbound-token case among them. `@claude 2026-10-18`: the rule, the
+    marker's syntax, the refusal and the record field below are this
+    repository's design of that decision, open to reversal.
+
+    An exchange binds its result to a key the presenter proved, and the holder
+    check that makes the binding mean something runs only when the subject token
+    carries a key (invariant 13). A token with no key has nothing to check the
+    presenter against, so any caller holding a captured copy and any valid proof
+    could exchange it. The operator marks an issuer that does send such tokens
+    with a fourth `|unbound` field on its `VOUCHRYX_TRUSTED_ISSUERS` line. The
+    marker is read from configuration only, a token cannot assert it, and it
+    applies to that issuer alone. Any other unbound subject token is refused with
+    `invalid_grant`, recorded as `delegation_denied` with reason `subject_unbound`,
+    and filed under the holder its chain names (invariant 11). A first hop has no
+    holder, so its refusal reaches the log and not the event stream, which is
+    what SPEC 6.1 filing gives every first-hop refusal. A marked exchange proceeds
+    as before, the result bound to the presenter's proof key, and its
+    `delegation_issued` record carries `subject_unbound: true`.
+
+    A line with no fourth field parses as it always did. A fourth field other
+    than `unbound`, or the marker on `VOUCHRYX_WORKLOAD_ISSUERS`, refuses the
+    start. Invariant 26 covers the subject token only: an unbound ACTOR credential
+    on a first hop is still accepted (README NOT PROVEN).
+    *(tests: `TestAnUnboundSubjectTokenFromAnUnmarkedIssuerIsRefused`,
+    `TestAnUnboundSubjectTokenFromAMarkedIssuerIsExchangedAndTheRecordSaysSo`,
+    `TestTheMarkIsPerIssuerNotPerService`, `TestATokenCannotMarkItselfUnbound`,
+    `TestAnUnboundHandOffRefusalIsRecordedUnderItsHolder`,
+    `TestABoundSubjectTokenNeedsNoMarker` (`internal/api`);
+    `TestAMarkedTrustedIssuerIsReadAsUnbound`,
+    `TestAnUnmarkedTrustedIssuerLineParsesAsItAlwaysDid`,
+    `TestAFourthFieldOtherThanUnboundRefusesToStart`,
+    `TestTheMarkerIsRefusedOnAWorkloadIssuer`,
+    `TestIssuesUnboundAnswersOnlyForAMarkedIssuer` (`internal/config`); the nine
+    rule tests were red first against the scaffold, and
+    `TestABoundSubjectTokenNeedsNoMarker` and
+    `TestAnUnmarkedTrustedIssuerLineParsesAsItAlwaysDid` pass before and after by
+    design, as controls; gate `scripts/every-subject-exchange-asks-the-marker.sh`
+    with four teeth cases; scenarios: `features/delegation.feature`)*
+
 ## Distribution
 
 Published as a container image, `ghcr.io/taipanbox/vouchryx`, built by
