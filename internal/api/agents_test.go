@@ -328,6 +328,9 @@ func TestAnAgentTokenAudienceComesFromTheAllowList(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("a listed audience (the RFC 8693 spelling) was refused: %d", w.Code)
 	}
+	if _, c := jwsParts(t, mustToken(t, body)); c["aud"] != gatewayAud {
+		t.Fatalf("asked by the RFC 8693 spelling, aud = %v", c["aud"])
+	}
 	w, body = ask("aud-3", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("no audience asked for, the issuer is listed, and it was refused: %d", w.Code)
