@@ -72,12 +72,10 @@ type fakeKeys struct {
 	cur    entry
 	err    error
 	signs  int
-	asked  int
-	signed []string
+	signed []string // the kid of every key the library signed with
 }
 
 func (f *fakeKeys) Current() (keyclient.Key, error) {
-	f.asked++
 	if f.err != nil {
 		return keyclient.Key{}, f.err
 	}
@@ -86,6 +84,7 @@ func (f *fakeKeys) Current() (keyclient.Key, error) {
 
 func (f *fakeKeys) Sign(msg []byte) (keyclient.Signature, error) {
 	f.signs++
+	f.signed = append(f.signed, f.cur.kid)
 	return keyclient.Signature{Alg: "ES256", Kid: f.cur.kid, Sig: f.cur.sign(msg)}, nil
 }
 
@@ -169,10 +168,14 @@ func TestTheJWSHasTheLibrarysHeaderAndPayload(t *testing.T) {
 func TestAWorkingKeyTokenNamesTheKeyItWasSignedWith(t *testing.T) {
 	e := newEntry(t, base, base.Add(72*time.Hour))
 	served := fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{e.keyFor().JWK}}}
-	d := newDelegated(&fakeKeys{cur: e}, served, nil, clockAt(base))
+	fk := &fakeKeys{cur: e}
+	d := newDelegated(fk, served, nil, clockAt(base))
 	tok, err := JWS(d, "at+jwt", map[string]any{"sub": "agent://acme/triage"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(fk.signed) != 1 || fk.signed[0] != e.kid {
+		t.Fatalf("the library signed with %v, want exactly the working key %s", fk.signed, e.kid)
 	}
 	if _, err := delegation.VerifyToken(tok, delegation.Set{Keys: []delegation.JWK{e.keyFor().JWK}}); err != nil {
 		t.Fatalf("the token does not verify against the key it claims to be signed with: %v", err)
