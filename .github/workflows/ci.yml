@@ -50,6 +50,8 @@ jobs:
         run: ./scripts/every-refusal-reaches-the-operator.sh
       - name: every issuance path checks the ban
         run: ./scripts/every-issuance-checks-the-ban.sh
+      - name: every subject exchange asks the unbound marker first
+        run: ./scripts/every-subject-exchange-asks-the-marker.sh
       - name: the Dockerfile's base images are pinned by digest
         run: ./scripts/base-images-pinned-by-digest.sh
       - name: the gates have teeth

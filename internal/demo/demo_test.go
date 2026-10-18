@@ -84,6 +84,10 @@ func realServer(t *testing.T) *stand {
 				Keys: delegation.Set{Keys: []delegation.JWK{
 					delegation.FromPublic(&idp.PublicKey, idpKid),
 				}},
+				// The demo's stand-in identity provider sends tokens with no key, as
+				// the demo's own InputToken does. An operator running it marks the
+				// issuer with a fourth `|unbound` field, and this is that line.
+				Unbound: true,
 			}},
 		},
 		Revs:   revoke.New(),

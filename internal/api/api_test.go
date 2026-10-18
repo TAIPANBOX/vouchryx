@@ -68,6 +68,10 @@ func newStand(t *testing.T) *stand {
 					Iss:      idpIss,
 					Audience: audience,
 					Keys:     delegation.Set{Keys: []delegation.JWK{delegation.FromPublic(&idp.PublicKey, "idp-1")}},
+					// The exchange tests here were written against identity-provider
+					// tokens that carry no key, so this stand's issuer is marked as one
+					// that sends them. The tests of the marker itself set it explicitly.
+					Unbound: true,
 				}},
 				RevokeKeys: []string{revokeTestKey},
 			},

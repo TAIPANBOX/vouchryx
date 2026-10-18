@@ -51,6 +51,10 @@ type Issuer struct {
 	// for the reason the plan gives: the PDP runs at a 3.2 ms p50 and a
 	// network fetch inside the request path taxes every delegation.
 	Keys delegation.Set
+	// Unbound marks an issuer whose subject tokens carry no `cnf.jkt`. Set
+	// only by the operator, with a fourth `|unbound` field on its
+	// VOUCHRYX_TRUSTED_ISSUERS line; never read from a token (invariant 26).
+	Unbound bool
 }
 
 // Config is everything this process needs.
@@ -283,6 +287,14 @@ func (c Config) AllowsAudience(aud string) bool {
 	return xaa.Configured(aud, c.AllowedAudiences)
 }
 
+// IssuesUnbound reports whether the operator marked this trusted issuer as one
+// whose subject tokens carry no `cnf.jkt` (invariant 26). The answer comes from
+// configuration alone: a token that says it is unbound changes nothing.
+func (c Config) IssuesUnbound(iss string) bool {
+	i, ok := c.FindIssuer(iss)
+	return ok && i.Unbound
+}
+
 // FindIssuer returns the trusted issuer with this `iss`.
 func (c Config) FindIssuer(iss string) (Issuer, bool) {
 	for _, i := range c.Trusted {
@@ -371,19 +383,38 @@ func validIssuerURL(raw string) error {
 	return nil
 }
 
-// loadTrusted parses `iss|aud|<jwks-file>` entries, one per line, for the
-// variable named `name` (VOUCHRYX_TRUSTED_ISSUERS or VOUCHRYX_WORKLOAD_ISSUERS:
+// loadTrusted parses `iss|aud|<jwks-file>[|unbound]` entries, one per line, for
+// the variable named `name` (VOUCHRYX_TRUSTED_ISSUERS or VOUCHRYX_WORKLOAD_ISSUERS:
 // one grammar, one parser, and every refusal names the variable it read).
+//
+// The optional fourth field is the marker that says an issuer's subject tokens
+// carry no cnf.jkt (invariant 26). A three-field line parses exactly as it did
+// before the marker existed. Anything else in the fourth field refuses the
+// start, rather than being read as part of the JWKS path, so a typo cannot
+// silently leave an issuer unmarked or marked.
 func loadTrusted(name, spec string) ([]Issuer, error) {
 	if spec == "" {
 		return nil, nil
 	}
 	var out []Issuer
 	for _, line := range splitLines(spec) {
-		parts := strings.SplitN(line, "|", 3)
-		if len(parts) != 3 {
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) < 3 {
 			return nil, fmt.Errorf(
 				"%s entry %q is not `iss|aud|jwks-path`", name, line)
+		}
+		unbound := false
+		if len(parts) == 4 {
+			if parts[3] != "unbound" {
+				return nil, fmt.Errorf(
+					"%s entry for %s has a fourth field %q; the only fourth field it takes is `unbound`, "+
+						"which marks the issuer as one whose subject tokens carry no key", name, parts[0], parts[3])
+			}
+			if name != "VOUCHRYX_TRUSTED_ISSUERS" {
+				return nil, fmt.Errorf(
+					"%s takes no fourth field: the unbound marker is for VOUCHRYX_TRUSTED_ISSUERS only", name)
+			}
+			unbound = true
 		}
 		if parts[1] == "" {
 			// The audience check in internal/api matches a token's aud
@@ -424,7 +455,7 @@ func loadTrusted(name, spec string) ([]Issuer, error) {
 						"will not try every key in turn", parts[0])
 			}
 		}
-		out = append(out, Issuer{Iss: parts[0], Audience: parts[1], Keys: set})
+		out = append(out, Issuer{Iss: parts[0], Audience: parts[1], Keys: set, Unbound: unbound})
 	}
 	return out, nil
 }

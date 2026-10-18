@@ -73,7 +73,8 @@ func usage() {
   keygen   -out <prefix> [-kid <kid>]
       Writes <prefix>.pem (private, mode 600) and <prefix>.jwks.json (public),
       for a demo IdP key: this is what VOUCHRYX_TRUSTED_ISSUERS takes, to
-      trust the tokens minted with -idp-key below. It is not vouchryx's own
+      trust the tokens minted with -idp-key below. The demo's IdP sends tokens
+      with no key, so its line ends in |unbound. It is not vouchryx's own
       signing key: a gateway verifying tokens vouchryx ISSUES
       (TOKENFUSE_DELEGATION_JWKS) needs the JWKS vouchryx itself serves at
       GET /.well-known/jwks.json, keyed by that key's own thumbprint, not

@@ -483,3 +483,40 @@ Feature: A delegation that can be proved, and ended
     Given a comma-separated list of absolute URLs with spaces around some entries
     When the service starts
     Then every entry is taken, trimmed, and nothing else is read from it
+
+  # @test:TestAnUnboundSubjectTokenFromAnUnmarkedIssuerIsRefused
+  Scenario: A token from an identity provider that binds nothing to a key is refused unless that provider is marked
+    Given a token from a trusted identity provider that carries no key
+    And that provider has not been marked as one that issues unbound tokens
+    When a caller presents it with a valid proof of its own key
+    Then nothing is issued, the answer is the same refusal as every other, and the reason goes to the record
+
+  # @test:TestAnUnboundSubjectTokenFromAMarkedIssuerIsExchangedAndTheRecordSaysSo
+  Scenario: A marked identity provider's unbound token is exchanged, and the record says the subject was unbound
+    Given a trusted identity provider marked as issuing unbound tokens
+    When a caller presents one of its tokens with a valid proof
+    Then the issued token is bound to the caller's proof key as before, and the issued record says the subject carried no key
+
+  # @test:TestTheMarkIsPerIssuerNotPerService
+  Scenario: Marking one identity provider does not mark another
+    Given two trusted identity providers, only one of them marked
+    When the unmarked one's unbound token is presented
+    Then it is refused, whatever the marked one is allowed to do
+
+  # @test:TestATokenCannotMarkItselfUnbound
+  Scenario: A token cannot claim to be unbound
+    Given a token from an unmarked issuer that says in its own claims that it is unbound
+    When it is presented
+    Then it is refused, because the marker is operator configuration and no token may assert it
+
+  # @test:TestAnUnboundHandOffRefusalIsRecordedUnderItsHolder
+  Scenario: An unbound hand-off refusal is filed under the agent that holds the chain
+    Given an unbound token from an unmarked issuer that names the agent it was handed to
+    When a caller presents it as a hand-off
+    Then it is refused, and the refusal is filed under that agent
+
+  # @test:TestABoundSubjectTokenNeedsNoMarker
+  Scenario: A token bound to the presenter's own key needs no marker
+    Given a token from an unmarked issuer that is bound to the caller's own key
+    When the caller presents it with a proof of that key and a bound agent credential
+    Then it is exchanged as before

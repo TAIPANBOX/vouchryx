@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-278-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-289-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -195,7 +195,9 @@ VOUCHRYX_ISSUER           the `iss` this service puts on every token it mints,
                           and the base every DPoP htu is checked against, so
                           behind a TLS terminator it must be the public URL
 VOUCHRYX_SIGNING_KEY      path to a PEM EC private key; it issues ES256
-VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path`, one per line
+VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path`, one per line; add `|unbound`
+                          for an issuer whose subject tokens carry no key
+                          (such a token is refused without the marker)
 VOUCHRYX_TTL_SECONDS      default 300, capped at 3600
 VOUCHRYX_EVENTS_PATH      agent-event NDJSON; unset means nothing is recorded
 VOUCHRYX_REVOCATIONS_PATH revocations kept on disk across a restart; unset,
@@ -242,9 +244,10 @@ go build -o vouchryx-demo ./cmd/vouchryx-demo
 ./vouchryx-demo keygen -out signing
 ./vouchryx-demo keygen -out holder
 
+# the demo issuer sends tokens with no key, so it is marked unbound
 VOUCHRYX_ISSUER=http://127.0.0.1:4310 \
 VOUCHRYX_SIGNING_KEY=signing.pem \
-VOUCHRYX_TRUSTED_ISSUERS="https://idp.local|http://127.0.0.1:4310|idp.jwks.json" \
+VOUCHRYX_TRUSTED_ISSUERS="https://idp.local|http://127.0.0.1:4310|idp.jwks.json|unbound" \
   ./vouchryx &
 
 ./vouchryx-demo exchange -url http://127.0.0.1:4310 \
@@ -282,7 +285,7 @@ issuer as an input, which is the operator's explicit line and never a default:
 
 ```sh
 # one issuer per line: the IdP, then this service's own key set
-VOUCHRYX_TRUSTED_ISSUERS=$'https://idp.local|http://127.0.0.1:4310|idp.jwks.json\nhttp://127.0.0.1:4310|http://127.0.0.1:4310|signing.jwks.json'
+VOUCHRYX_TRUSTED_ISSUERS=$'https://idp.local|http://127.0.0.1:4310|idp.jwks.json|unbound\nhttp://127.0.0.1:4310|http://127.0.0.1:4310|signing.jwks.json'
 ```
 
 The token being handed on must name this service's own issuer as its `aud`,
@@ -320,7 +323,7 @@ printf '%s' 'xaa-demo-secret' | shasum -a 256
 
 VOUCHRYX_ISSUER=http://127.0.0.1:4310 \
 VOUCHRYX_SIGNING_KEY=signing.pem \
-VOUCHRYX_TRUSTED_ISSUERS="https://idp.local|http://127.0.0.1:4310|idp.jwks.json" \
+VOUCHRYX_TRUSTED_ISSUERS="https://idp.local|http://127.0.0.1:4310|idp.jwks.json|unbound" \
 VOUCHRYX_CLIENTS="console|agent://acme/console|sha256:ec57e360a7beebe60564bab19e0186a4224a4a44b15461dc139d5130ba6783d7" \
 VOUCHRYX_RESOURCES="https://broker.acme.example/mcp" \
   ./vouchryx &
@@ -496,7 +499,7 @@ line, both written every time.
 
 ## Testing
 
-222 tests. Tier T3: these are authorization decisions where a wrong answer is
+233 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;
@@ -533,12 +536,21 @@ staticcheck ./...
 ./scripts/readme-numbers.sh
 ./scripts/every-refusal-reaches-the-operator.sh
 ./scripts/every-issuance-checks-the-ban.sh
+./scripts/every-subject-exchange-asks-the-marker.sh
 ./scripts/gates-have-teeth.sh    # needs a clean tree
 ```
 
 ## NOT PROVEN
 
 Stated here rather than left to be discovered.
+
+- **An unbound ACTOR credential is still accepted on a first hop.** Invariant 26
+  covers the subject token only. On a first hop with an unbound actor
+  credential, the result is bound to the presenter's own proof key, so a
+  captured identity-provider token that names an agent could be exchanged by
+  whoever holds any key. Not closed by this change; it needs its own decision,
+  because refusing it would break any deployment whose agents present unbound
+  credentials.
 
 - **The revocation store is a local file**: no replication, no cross-instance
   sharing, compacted only at start (a long-running process under heavy

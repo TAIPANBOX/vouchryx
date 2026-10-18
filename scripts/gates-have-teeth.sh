@@ -179,6 +179,27 @@ fault "issuance: an unrelated comment beside a ban check" \
   internal/api/agents.go 'if e, banned := s.Revs.Banned([]string{agent.ID}); banned {' 'if e, banned := s.Revs.Banned([]string{agent.ID}); banned { // asked' \
   pass ./scripts/every-issuance-checks-the-ban.sh
 
+# An unbound subject token is exchanged only when its issuer is marked
+# (invariant 26). The exchange must ask the marker before it signs.
+fault "unbound: the exchange stops asking the marker" \
+  internal/api/api.go 'if subjectJKT == "" && !s.Cfg.IssuesUnbound(subIss) {' 'if subjectJKT == "" && !false {' \
+  fail ./scripts/every-subject-exchange-asks-the-marker.sh
+
+fault "unbound: the marker survives only as a comment" \
+  internal/api/api.go 'if subjectJKT == "" && !s.Cfg.IssuesUnbound(subIss) {' 'if subjectJKT == "" && !false { // s.Cfg.IssuesUnbound(subIss)' \
+  fail ./scripts/every-subject-exchange-asks-the-marker.sh
+
+# The subject is discovered by its form field: with that field renamed no
+# exchange is left to judge, and the gate must say it measured nothing.
+fault "unbound: no subject token is read, so nothing is left to judge" \
+  internal/api/api.go 'r.PostForm.Get("subject_token")' 'r.PostForm.Get("subject_tokne")' \
+  fail ./scripts/every-subject-exchange-asks-the-marker.sh
+
+# And it must not fire on an edit that leaves the marker in place.
+fault "unbound: an unrelated comment beside the marker check" \
+  internal/api/api.go 'if subjectJKT == "" && !s.Cfg.IssuesUnbound(subIss) {' 'if subjectJKT == "" && !s.Cfg.IssuesUnbound(subIss) { // asked' \
+  pass ./scripts/every-subject-exchange-asks-the-marker.sh
+
 fault "base images: a FROM loses its digest and falls back to a moving tag" \
   Dockerfile 'golang@sha256:5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c' 'golang:1.27' \
   fail ./scripts/base-images-pinned-by-digest.sh
