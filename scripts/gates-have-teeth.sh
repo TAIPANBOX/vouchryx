@@ -145,7 +145,7 @@ fault_all_multi "refusals: the responses it reads are gone" \
 
 # And it must not fire on a success, which is most of what the surface writes.
 fault "refusals: a success response moved" \
-  internal/api/api.go 'writeJSON(w, http.StatusOK, s.Cfg.PublicSet())' 'writeJSON(w, http.StatusOK, s.Cfg.PublicSet()) //nolint' \
+  internal/api/api.go 'writeJSON(w, http.StatusOK, s.Signer.Public())' 'writeJSON(w, http.StatusOK, s.Signer.Public()) //nolint' \
   pass ./scripts/every-refusal-reaches-the-operator.sh
 
 # A ban is only a stop if every path that signs asks first (invariant 25).
