@@ -103,6 +103,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/token", s.token)
 	mux.HandleFunc("POST /v1/revoke", s.revokeHandler)
+	mux.HandleFunc("POST /v1/revoke/lift", s.liftHandler)
 	mux.HandleFunc("GET /v1/revocations", s.revocations)
 	mux.HandleFunc("GET /.well-known/jwks.json", s.jwks)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.authServerMetadata)
@@ -169,6 +170,8 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		s.tokenExchange(w, r)
 	case JWTBearerGrantType:
 		s.tokenJWTBearer(w, r)
+	case ClientCredentialsGrantType:
+		s.tokenClientCredentials(w, r)
 	default:
 		refuse(w, http.StatusBadRequest, "unsupported_grant_type", "grant_type_not_implemented", map[string]any{"asked_for": r.PostForm.Get("grant_type")})
 	}
@@ -289,7 +292,7 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actor, _, err := s.verifyInput(r.PostForm.Get("actor_token"))
+	actor, actorIss, err := s.verifyInput(r.PostForm.Get("actor_token"))
 	if err != nil {
 		deny(holder, "bad_actor_token", map[string]any{"detail": err.Error()})
 		return
@@ -304,6 +307,27 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 	// into another chain past the depth and cycle rules the record enforces.
 	if _, carriesChain := actor["act"]; carriesChain {
 		deny(actorSub, "actor_token_is_a_delegation", nil)
+		return
+	}
+	// A REVOKED actor credential issues nothing either (invariant 25). The
+	// subject token was always asked (invariant 14); the actor's was not, so an
+	// agent revoked while one of its own five-minute credentials was still
+	// unexpired could present it here and come away with a delegation minted
+	// AFTER the revocation, which the list does not cover: a revocation
+	// laundered through the exchange. An actor token with no jti or iat is
+	// asked with the empty id and the epoch, fail closed, invariant 14's rule.
+	actorJTI, _ := actor["jti"].(string)
+	actorIAT, _ := asUnix(actor["iat"])
+	if e, ok := s.Revs.RevokedAny(actorJTI, []string{actorSub}, actorIAT, s.now()); ok {
+		deny(actorSub, "actor_revoked", map[string]any{"jti": e.JTI, "subject": e.Subject, "actor": e.Actor, "reason": e.Reason})
+		return
+	}
+	// And nothing is delegated to or from a banned party, wherever it would
+	// stand in the chain (invariant 25). Asked about tokens minted after the
+	// ban as much as before it: the ban's own revocation half covers the
+	// latter, and only this covers the former.
+	if e, ok := s.Revs.Banned(append(append([]string{sub}, prior...), actorSub)); ok {
+		deny(actorSub, "party_banned", map[string]any{"subject": e.Subject})
 		return
 	}
 
@@ -374,6 +398,16 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 		// an issuer attested (`outJKT`, above). Without this the whole exchange
 		// issues bearer tokens.
 		"cnf": map[string]any{"jkt": outJKT},
+	}
+	// The unit and org a delegation is billed to come from the agent's OWN
+	// credential, minted by this service (invariant 24), never from an
+	// identity provider's token, which may say anything about either.
+	if s.isOwnAgentToken(actorIss, r.PostForm.Get("actor_token")) {
+		for _, k := range []string{"unit", "org"} {
+			if v, ok := actor[k].(string); ok && v != "" {
+				claims[k] = v
+			}
+		}
 	}
 	// V2: a caller may only NARROW scope, never widen it. RFC 8693 section 2.1
 	// leaves `scope` to the authorization server, and copying the request's
@@ -504,6 +538,9 @@ type revokeBody struct {
 	Actor        string `json:"actor"`
 	Reason       string `json:"reason"`
 	ExpiresInSec int    `json:"expires_in_seconds"`
+	// Ban makes this subject revocation also a standing refusal to issue
+	// anything naming the subject, until /v1/revoke/lift (invariant 25).
+	Ban bool `json:"ban"`
 }
 
 // revokeHandler is the thing that ends an agent's authority. V1 hardened it
@@ -557,6 +594,10 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "invalid_request", "revocation_names_nobody", nil)
 		return
 	}
+	if err := banRefusal(body); err != nil {
+		refuse(w, http.StatusBadRequest, "invalid_request", "ban_names_a_subject_only", map[string]any{"detail": err.Error()})
+		return
+	}
 	now := s.now()
 	// Compared BEFORE the multiplication, not after: the same overflow
 	// invariant 16 closed on VOUCHRYX_TTL_SECONDS, on expires_in_seconds
@@ -581,6 +622,7 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 		Expires: now.Add(ttl).Unix(),
 		Actor:   body.Actor,
 		Reason:  body.Reason,
+		Ban:     body.Ban,
 	}
 	if body.Subject != "" {
 		e.IssuedBefore = now.Unix()
@@ -604,6 +646,7 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 		"expires":    e.Expires,
 		"revoked_by": keyActor,
 		"durable":    s.Store != nil && storeErr == nil,
+		"ban":        body.Ban,
 	})
 	if storeErr != nil {
 		// In force in this process and not on disk. The list keeps it, because
@@ -615,9 +658,16 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"detail": storeErr.Error()})
 		return
 	}
-	log.Printf("vouchryx: revoked: jti=%q subject=%q actor=%q reason=%q revoked_by=%q",
-		body.JTI, body.Subject, body.Actor, body.Reason, keyActor)
-	writeJSON(w, http.StatusOK, map[string]any{"revoked": true, "expires": e.Expires})
+	log.Printf("vouchryx: revoked: jti=%q subject=%q actor=%q reason=%q revoked_by=%q ban=%v",
+		body.JTI, body.Subject, body.Actor, body.Reason, keyActor, body.Ban)
+	answer := map[string]any{"revoked": true, "expires": e.Expires}
+	if body.Ban {
+		// Said in the answer, because a ban without a store is forgotten by a
+		// restart and the operator stopping an agent must know which one this was.
+		answer["banned"] = true
+		answer["durable"] = s.Store != nil
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // authorizeRevoke reads the caller's bearer key and matches it against every

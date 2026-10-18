@@ -131,6 +131,8 @@ func TestTrustedIssuersAreOptionalOnlyWhenAgentsAreConfigured(t *testing.T) {
 	})
 	plain := baseXAAEnv(t)
 	plain["VOUCHRYX_TRUSTED_ISSUERS"] = ""
+	plain["VOUCHRYX_AGENTS"] = "" // t.Setenv above lasts the whole test
+	plain["VOUCHRYX_WORKLOAD_ISSUERS"] = ""
 	withEnv(t, plain, func() {
 		err := mustFail(t)
 		if !strings.Contains(err.Error(), "VOUCHRYX_TRUSTED_ISSUERS") {

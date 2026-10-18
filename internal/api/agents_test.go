@@ -125,7 +125,8 @@ func (a *agentStand) issue(t *testing.T, r ccReq) (*httptest.ResponseRecorder, m
 	req := httptest.NewRequest("POST", "http://vouchryx.test/v1/token", strings.NewReader(form.Encode()))
 	req.Header.Set("content-type", "application/x-www-form-urlencoded")
 	if r.id != "" {
-		req.SetBasicAuth(r.id, r.secret)
+		// RFC 6749 2.3.1: form-urlencoded first, then Basic.
+		req.SetBasicAuth(url.QueryEscape(r.id), url.QueryEscape(r.secret))
 	}
 	if r.proof != "" {
 		req.Header.Set("DPoP", r.proof)
@@ -162,6 +163,17 @@ func jwsParts(t *testing.T, tok string) (header, claims map[string]any) {
 	return header, claims
 }
 
+// mustToken reads the access token out of an answer, or stops the test: a
+// type assertion that panicked here would take every later test with it.
+func mustToken(t *testing.T, body map[string]any) string {
+	t.Helper()
+	tok, ok := body["access_token"].(string)
+	if !ok || tok == "" {
+		t.Fatalf("no access token in the answer: %v", body)
+	}
+	return tok
+}
+
 func thumb(t *testing.T, k *ecdsa.PrivateKey) string {
 	t.Helper()
 	th, err := delegation.Thumbprint(delegation.FromPublic(&k.PublicKey, ""))
@@ -195,7 +207,7 @@ func TestAnEnrolledAgentGetsAShortLivedBoundAccessToken(t *testing.T) {
 	if _, ok := body["refresh_token"]; ok {
 		t.Fatal("a refresh token was issued")
 	}
-	tok, _ := body["access_token"].(string)
+	tok := mustToken(t, body)
 	if _, err := delegation.VerifyToken(tok, a.srv.Cfg.PublicSet()); err != nil {
 		t.Fatalf("the token does not verify with this service's own published set: %v", err)
 	}
@@ -288,13 +300,13 @@ func TestAnAgentTokenLivesFiveMinutesWhateverTheConfiguredTTL(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
-	_, c := jwsParts(t, body["access_token"].(string))
+	_, c := jwsParts(t, mustToken(t, body))
 	if got := c["exp"].(float64) - c["iat"].(float64); got != 300 || body["expires_in"] != float64(300) {
 		t.Fatalf("with a one-hour TTL configured the agent token lives %v s (expires_in %v), want 300", got, body["expires_in"])
 	}
 	a.srv.Cfg.TTL = time.Minute
 	_, body = a.issue(t, a.triageAsks(t, "ttl-2"))
-	_, c = jwsParts(t, body["access_token"].(string))
+	_, c = jwsParts(t, mustToken(t, body))
 	if got := c["exp"].(float64) - c["iat"].(float64); got != 60 {
 		t.Fatalf("a shorter configured TTL was not honoured: %v s", got)
 	}
@@ -309,7 +321,7 @@ func TestAnAgentTokenAudienceComesFromTheAllowList(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("a listed resource was refused: %d", w.Code)
 	}
-	if _, c := jwsParts(t, body["access_token"].(string)); c["aud"] != gatewayAud {
+	if _, c := jwsParts(t, mustToken(t, body)); c["aud"] != gatewayAud {
 		t.Fatalf("aud = %v", c["aud"])
 	}
 	w, body = ask("aud-2", url.Values{"audience": {gatewayAud}})
@@ -320,7 +332,7 @@ func TestAnAgentTokenAudienceComesFromTheAllowList(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("no audience asked for, the issuer is listed, and it was refused: %d", w.Code)
 	}
-	if _, c := jwsParts(t, body["access_token"].(string)); c["aud"] != ourIss {
+	if _, c := jwsParts(t, mustToken(t, body)); c["aud"] != ourIss {
 		t.Fatalf("with no audience asked for, aud = %v, want this service's issuer", c["aud"])
 	}
 	for name, form := range map[string]url.Values{
@@ -346,7 +358,7 @@ func TestAWorkloadTokenGetsTheAgentItIsBoundToItsToken(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("a workload token bound to an agent was refused: %d %s", w.Code, w.Body)
 	}
-	_, c := jwsParts(t, body["access_token"].(string))
+	_, c := jwsParts(t, mustToken(t, body))
 	if c["sub"] != worker || c["client_id"] != worker || c["auth_src"] != "workload:"+clusterIss {
 		t.Fatalf("claims = %v", c)
 	}
@@ -481,7 +493,7 @@ func TestABannedAgentGetsNoAgentToken(t *testing.T) {
 func TestABanRevokesTheTokensTheAgentAlreadyHolds(t *testing.T) {
 	a := wallAgentStand(t)
 	_, body := a.issue(t, a.triageAsks(t, "held-1"))
-	_, held := jwsParts(t, body["access_token"].(string))
+	_, held := jwsParts(t, mustToken(t, body))
 	if w := a.ban(t, triage); w.Code != http.StatusOK {
 		t.Fatalf("ban: %d", w.Code)
 	}
@@ -574,6 +586,9 @@ func TestABanNamesASubjectOnly(t *testing.T) {
 
 func TestABanTheDiskRefusedStaysInForce(t *testing.T) {
 	a := wallAgentStand(t)
+	if w, _ := a.issue(t, a.triageAsks(t, "d-0")); w.Code != http.StatusOK {
+		t.Fatalf("control: before the ban the agent got %d", w.Code)
+	}
 	a.srv.Store = &failingStore{}
 	w := a.ban(t, triage)
 	if w.Code != http.StatusServiceUnavailable {
@@ -581,6 +596,9 @@ func TestABanTheDiskRefusedStaysInForce(t *testing.T) {
 	}
 	if got, _ := a.issue(t, a.triageAsks(t, "d-1")); got.Code != http.StatusBadRequest {
 		t.Fatalf("the ban was not in force after the disk refused it: %d", got.Code)
+	}
+	if _, ok := a.srv.Revs.Banned([]string{triage}); !ok {
+		t.Fatal("the list does not hold the ban the disk refused")
 	}
 }
 
@@ -624,7 +642,7 @@ func (a *agentStand) ownAgentToken(t *testing.T, jti string) string {
 	if w.Code != http.StatusOK {
 		t.Fatalf("the agent token for the exchange answered %d", w.Code)
 	}
-	return body["access_token"].(string)
+	return mustToken(t, body)
 }
 
 func TestAnExchangeCopiesUnitAndOrgFromTheAgentsOwnToken(t *testing.T) {
@@ -635,7 +653,7 @@ func TestAnExchangeCopiesUnitAndOrgFromTheAgentsOwnToken(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("an exchange with the agent's own token as actor answered %d: %s", w.Code, w.Body)
 	}
-	_, c := jwsParts(t, body["access_token"].(string))
+	_, c := jwsParts(t, mustToken(t, body))
 	if c["unit"] != "agents" || c["org"] != "default" {
 		t.Fatalf("the delegation does not carry the agent's unit and org: %v", c)
 	}
@@ -649,7 +667,7 @@ func TestAnExchangeDoesNotCopyUnitFromAForeignActorToken(t *testing.T) {
 	a.trustSelf()
 	// Control: our own agent token does carry the unit through.
 	_, own := a.exchange(t, a.input(t, "user://acme.example/alice", nil), a.ownAgentToken(t, "f-0"), a.proof(t, "f-1"))
-	if _, c := jwsParts(t, own["access_token"].(string)); c["unit"] != "agents" {
+	if _, c := jwsParts(t, mustToken(t, own)); c["unit"] != "agents" {
 		t.Fatalf("control: own agent token, unit = %v", c["unit"])
 	}
 	w, body := a.exchange(t, a.input(t, "user://acme.example/alice", nil),
@@ -657,7 +675,7 @@ func TestAnExchangeDoesNotCopyUnitFromAForeignActorToken(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("the exchange answered %d", w.Code)
 	}
-	if _, c := jwsParts(t, body["access_token"].(string)); c["unit"] != nil || c["org"] != nil {
+	if _, c := jwsParts(t, mustToken(t, body)); c["unit"] != nil || c["org"] != nil {
 		t.Fatalf("an identity provider's actor token chose the unit and org: %v %v", c["unit"], c["org"])
 	}
 }

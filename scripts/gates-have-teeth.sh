@@ -146,6 +146,37 @@ fault "refusals: a success response moved" \
   internal/api/api.go 'writeJSON(w, http.StatusOK, s.Cfg.PublicSet())' 'writeJSON(w, http.StatusOK, s.Cfg.PublicSet()) //nolint' \
   pass ./scripts/every-refusal-reaches-the-operator.sh
 
+# A ban is only a stop if every path that signs asks first (invariant 25).
+# One case per signing function, so dropping the check from any one of the
+# three grants is caught, not only from the one a reader happens to look at.
+fault "issuance: the agent grant signs without asking the ban list" \
+  internal/api/agents.go 'if e, banned := s.Revs.Banned([]string{agent.ID}); banned {' 'if e, banned := (revoke.Entry{}), false; banned {' \
+  fail ./scripts/every-issuance-checks-the-ban.sh
+
+fault "issuance: the exchange signs without asking the ban list" \
+  internal/api/api.go 'if e, ok := s.Revs.Banned(append(append([]string{sub}, prior...), actorSub)); ok {' 'if e, ok := (revoke.Entry{}), false; ok {' \
+  fail ./scripts/every-issuance-checks-the-ban.sh
+
+fault "issuance: Cross App Access signs without asking the ban list" \
+  internal/api/xaa.go 'if e, ok := s.Revs.Banned([]string{mappedSub, client.Agent}); ok {' 'if e, ok := (revoke.Entry{}), false; ok {' \
+  fail ./scripts/every-issuance-checks-the-ban.sh
+
+# A check that is only mentioned in a comment is not a check.
+fault "issuance: the ban check survives only as a comment" \
+  internal/api/xaa.go 'if e, ok := s.Revs.Banned([]string{mappedSub, client.Agent}); ok {' 'if e, ok := (revoke.Entry{}), false; ok { // s.Revs.Banned(x)' \
+  fail ./scripts/every-issuance-checks-the-ban.sh
+
+# The subjects are discovered: with no signing call left the gate must say it
+# measured nothing rather than pass over an empty set.
+fault_all_multi "issuance: no signing call is left to judge" \
+  "internal/api/api.go internal/api/xaa.go internal/api/agents.go" '(s.Cfg.SigningKey, s.Cfg.KeyID, claims)' 'Nothing()' \
+  fail ./scripts/every-issuance-checks-the-ban.sh
+
+# And it must not fire on an edit that leaves every check in place.
+fault "issuance: an unrelated comment beside a ban check" \
+  internal/api/agents.go 'if e, banned := s.Revs.Banned([]string{agent.ID}); banned {' 'if e, banned := s.Revs.Banned([]string{agent.ID}); banned { // asked' \
+  pass ./scripts/every-issuance-checks-the-ban.sh
+
 fault "base images: a FROM loses its digest and falls back to a moving tag" \
   Dockerfile 'golang@sha256:5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c' 'golang:1.27' \
   fail ./scripts/base-images-pinned-by-digest.sh

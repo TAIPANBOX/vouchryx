@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -675,7 +676,7 @@ func TestAnAgentIsStoppedAndLetBackAcrossARealRestart(t *testing.T) {
 		req, _ := http.NewRequest("POST", "http://"+addr+"/v1/token", strings.NewReader("grant_type=client_credentials"))
 		req.Header.Set("content-type", "application/x-www-form-urlencoded")
 		req.Header.Set("DPoP", proof)
-		req.SetBasicAuth(agent, enrolment)
+		req.SetBasicAuth(url.QueryEscape(agent), url.QueryEscape(enrolment))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)

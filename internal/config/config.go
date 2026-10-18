@@ -90,8 +90,16 @@ type Config struct {
 	XAARequireDPoP bool
 	// AllowedAudiences is the parsed VOUCHRYX_ALLOWED_AUDIENCES list.
 	AllowedAudiences []string
-	// Agents and Workloads: scaffold for invariant 23.
-	Agents    *agents.Registry
+	// Agents is the parsed VOUCHRYX_AGENTS registry: the agents this service
+	// issues their own credential to (the client_credentials grant, invariant
+	// 23). OPTIONAL: nil closes that grant, fail closed, the way a nil
+	// XAAClients closes Cross App Access.
+	Agents *agents.Registry
+	// Workloads are the parsed VOUCHRYX_WORKLOAD_ISSUERS: the clusters whose
+	// projected service-account tokens prove which agent is asking. Kept apart
+	// from Trusted on purpose: a workload token is a credential presented TO
+	// this service, never a subject or an actor to exchange, and an issuer in
+	// one table gains nothing in the other.
 	Workloads []Issuer
 }
 
@@ -163,14 +171,45 @@ func FromEnv() (Config, error) {
 		return c, err
 	}
 
-	trusted, err := loadTrusted(os.Getenv("VOUCHRYX_TRUSTED_ISSUERS"))
+	// VOUCHRYX_AGENTS first, because whether VOUCHRYX_TRUSTED_ISSUERS is
+	// required depends on it (invariant 23).
+	if spec := os.Getenv("VOUCHRYX_AGENTS"); spec != "" {
+		reg, err := agents.ParseRegistry(spec)
+		if err != nil {
+			return c, fmt.Errorf("VOUCHRYX_AGENTS: %w", err)
+		}
+		c.Agents = reg
+	}
+	workloads, err := loadTrusted("VOUCHRYX_WORKLOAD_ISSUERS", os.Getenv("VOUCHRYX_WORKLOAD_ISSUERS"))
 	if err != nil {
 		return c, err
 	}
-	if len(trusted) == 0 {
+	c.Workloads = workloads
+	// An agent bound to a cluster nobody configured could never prove itself,
+	// and an operator who wrote that line believes it can: refused, naming the
+	// issuer, the way an empty trusted audience is (invariant 22).
+	for _, iss := range c.Agents.WorkloadIssuers() {
+		if _, ok := c.FindWorkloadIssuer(iss); !ok {
+			return c, fmt.Errorf(
+				"VOUCHRYX_AGENTS binds an agent to the workload issuer %s, which VOUCHRYX_WORKLOAD_ISSUERS "+
+					"does not configure, so that agent could never prove itself", iss)
+		}
+	}
+
+	trusted, err := loadTrusted("VOUCHRYX_TRUSTED_ISSUERS", os.Getenv("VOUCHRYX_TRUSTED_ISSUERS"))
+	if err != nil {
+		return c, err
+	}
+	// Required unless this service issues agents their own credential. A
+	// deployment of agents with no human identity provider has nobody to trust
+	// for the exchange grant; making it invent an issuer would make it
+	// configure a trust it does not want. Without agents the rule is the one
+	// it always was: a service trusting nobody would issue nothing and look
+	// healthy (invariant 8).
+	if len(trusted) == 0 && c.Agents == nil {
 		return c, errors.New(
-			"VOUCHRYX_TRUSTED_ISSUERS is required: without one this service would " +
-				"exchange tokens it has no way to verify")
+			"VOUCHRYX_TRUSTED_ISSUERS is required (unless VOUCHRYX_AGENTS enrols at least one agent): " +
+				"without one this service would exchange tokens it has no way to verify")
 	}
 	c.Trusted = trusted
 
@@ -332,8 +371,10 @@ func validIssuerURL(raw string) error {
 	return nil
 }
 
-// loadTrusted parses `iss=aud=<jwks-file>` entries, one per line.
-func loadTrusted(spec string) ([]Issuer, error) {
+// loadTrusted parses `iss|aud|<jwks-file>` entries, one per line, for the
+// variable named `name` (VOUCHRYX_TRUSTED_ISSUERS or VOUCHRYX_WORKLOAD_ISSUERS:
+// one grammar, one parser, and every refusal names the variable it read).
+func loadTrusted(name, spec string) ([]Issuer, error) {
 	if spec == "" {
 		return nil, nil
 	}
@@ -342,7 +383,7 @@ func loadTrusted(spec string) ([]Issuer, error) {
 		parts := strings.SplitN(line, "|", 3)
 		if len(parts) != 3 {
 			return nil, fmt.Errorf(
-				"VOUCHRYX_TRUSTED_ISSUERS entry %q is not `iss|aud|jwks-path`", line)
+				"%s entry %q is not `iss|aud|jwks-path`", name, line)
 		}
 		if parts[1] == "" {
 			// The audience check in internal/api matches a token's aud
@@ -350,12 +391,12 @@ func loadTrusted(spec string) ([]Issuer, error) {
 			// minted for ANY audience. Refused here, with the issuer named,
 			// so the operator knows which line to fix (CLAUDE.md invariant 22).
 			return nil, fmt.Errorf(
-				"VOUCHRYX_TRUSTED_ISSUERS entry for %s has an empty audience; an empty "+
-					"audience accepts a token minted for any audience", parts[0])
+				"%s entry for %s has an empty audience; an empty "+
+					"audience accepts a token minted for any audience", name, parts[0])
 		}
 		raw, err := os.ReadFile(parts[2]) // #nosec G304 -- operator-supplied path from the environment, read once at startup
 		if err != nil {
-			return nil, fmt.Errorf("reading the JWKS for %s at %s: %w", parts[0], parts[2], err)
+			return nil, fmt.Errorf("%s: reading the JWKS for %s at %s: %w", name, parts[0], parts[2], err)
 		}
 		var set delegation.Set
 		if err := json.Unmarshal(raw, &set); err != nil {
@@ -421,5 +462,12 @@ func splitLines(s string) []string {
 	return out
 }
 
-// FindWorkloadIssuer is scaffold for invariant 23.
-func (c Config) FindWorkloadIssuer(iss string) (Issuer, bool) { return Issuer{}, false }
+// FindWorkloadIssuer returns the workload issuer with this `iss`, exactly.
+func (c Config) FindWorkloadIssuer(iss string) (Issuer, bool) {
+	for _, i := range c.Workloads {
+		if i.Iss == iss {
+			return i, true
+		}
+	}
+	return Issuer{}, false
+}
