@@ -445,9 +445,14 @@ refused leaves the ban standing.
 
 ## Where the crypto lives
 
-**Not here.** Signing, verification, the algorithm allowlist, the DPoP proof
-check and the `act` chain are `agent-stack-go/delegation`, pinned at v1.3.0 (`go.mod`). This
-service imports it, and today it is the only Go service that does: measured
+**Not here.** Verification, the algorithm allowlist, the DPoP proof check and
+the `act` chain are `agent-stack-go/delegation`, pinned in `go.mod` (at a merged
+`keyclient` commit, since the wave-2 signing work; the release that carries it is
+the owner's to tag). The JWS of a token this service issues is assembled by
+`internal/signer` (CLAUDE.md invariant 27), which signs with the file key, or,
+with `VOUCHRYX_SIGNER=keyryx`, with the working key held by `keyclient` and
+certified by Keyryx. `delegation.SignES256` is no longer called. This
+service imports the library, and today it is the only Go service that does: measured
 2026-09-16 over every Go repository in the stack, `wardryx`, `idryx`,
 `scopyx`, `heraldyx` and `mockryx` import nothing from that package. What this
 service issues is verified at TokenFuse's two doors (its Rust `delegation`
