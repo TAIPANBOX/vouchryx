@@ -42,7 +42,12 @@
           "VOUCHRYX_XAA_REQUIRE_DPOP": { "required": false },
           "VOUCHRYX_ALLOWED_AUDIENCES": { "required": false },
           "VOUCHRYX_AGENTS": { "required": false },
-          "VOUCHRYX_WORKLOAD_ISSUERS": { "required": false }
+          "VOUCHRYX_WORKLOAD_ISSUERS": { "required": false },
+          "VOUCHRYX_SIGNER": { "required": false },
+          "VOUCHRYX_KEYRYX_URL": { "required": false },
+          "VOUCHRYX_KEYRYX_CONSUMER": { "required": false },
+          "VOUCHRYX_KEYRYX_SOCKET": { "required": false },
+          "VOUCHRYX_KEYRYX_CREDENTIAL_FILE": { "required": false }
         },
         "missing_required_exit_code": 2
       },
@@ -57,7 +62,7 @@
         },
         "a_launcher_may_probe_something_else": {
           "value": "/.well-known/jwks.json",
-          "why": "stack-up polls that rather than the health path above, and it is the better probe here rather than a mistake: /healthz returns 200 the moment the process is up, while the key set answering proves the service can do the one thing it exists for. Declared so a cross-repo check reads a decision instead of a disagreement."
+          "why": "stack-up polls that rather than the health path above, and it is the better probe here rather than a mistake: /healthz returns 200 the moment the process is up, while the key set answering proves the service can do the one thing it exists for. In keyryx mode /healthz answers 503 until a working key is certified, so there it reads as readiness, and a liveness probe on it would restart the process while Keyryx is down. Declared so a cross-repo check reads a decision instead of a disagreement."
         },
         "revoke_keys_default": {
           "value": "unset: /v1/revoke refuses every call, rather than accepting one from whoever can reach the port",
@@ -90,6 +95,14 @@
         "workload_issuers_default": {
           "value": "unset: no cluster's service-account token proves anything here, and an agent bound to a workload issuer refuses the start",
           "why": "optional because only a launcher running agents in a cluster has a workload issuer to name; required in effect once VOUCHRYX_AGENTS binds an agent to one, which internal/config refuses otherwise, a conditional rule this manifest's required/optional split cannot express"
+        },
+        "signing_key_conditional": {
+          "value": "required unless VOUCHRYX_SIGNER=keyryx; in keyryx mode optional, and when set it is the migration's overlap key, published and never used to sign",
+          "why": "declared required above because it is required in the base environment, which is the file-keyed one this manifest's tests start the binary in; the keyryx mode is a conditional rule of the same kind as trusted_issuers_conditional, which the binary required/optional split cannot express on its own, and internal/config's own tests hold the conditional"
+        },
+        "signer_default": {
+          "value": "file: the signing key is VOUCHRYX_SIGNING_KEY, exactly as before; VOUCHRYX_SIGNER=keyryx takes a working key Keyryx certifies instead",
+          "why": "optional because making it required would stop every existing bring-up; a KEYRYX variable set while the signer is file is refused by name, so a launcher cannot half-configure the other mode silently"
         },
         "trusted_issuers_conditional": {
           "value": "required unless VOUCHRYX_AGENTS enrols at least one agent",

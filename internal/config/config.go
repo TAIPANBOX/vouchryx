@@ -67,7 +67,7 @@ type Config struct {
 	// VOUCHRYX_SIGNING_KEY) or "keyryx" (a delegated key Keyryx certifies).
 	Signer string
 	// Keyryx says how this service reaches Keyryx. Set only when Signer is "keyryx".
-	Keyryx *KeyryxConfig
+	Keyryx     *KeyryxConfig
 	TTL        time.Duration
 	Trusted    []Issuer
 	EventsPath string
@@ -127,6 +127,41 @@ type KeyryxConfig struct {
 	BearerFile string
 }
 
+// signerFromEnv reads VOUCHRYX_SIGNER and, for keyryx, the variables that say how
+// to reach Keyryx. A Keyryx variable with any other signer is refused by name, so
+// a line an operator wrote is never silently ignored.
+func signerFromEnv() (string, *KeyryxConfig, error) {
+	keyryxVars := []string{"VOUCHRYX_KEYRYX_URL", "VOUCHRYX_KEYRYX_CONSUMER", "VOUCHRYX_KEYRYX_SOCKET", "VOUCHRYX_KEYRYX_CREDENTIAL_FILE"}
+	switch os.Getenv("VOUCHRYX_SIGNER") {
+	case "", "file":
+		for _, v := range keyryxVars {
+			if os.Getenv(v) != "" {
+				return "", nil, fmt.Errorf("%s is set, but VOUCHRYX_SIGNER is not keyryx, so it has no meaning here", v)
+			}
+		}
+		return "file", nil, nil
+	case "keyryx":
+		k := &KeyryxConfig{
+			BaseURL:    os.Getenv("VOUCHRYX_KEYRYX_URL"),
+			Consumer:   os.Getenv("VOUCHRYX_KEYRYX_CONSUMER"),
+			Socket:     os.Getenv("VOUCHRYX_KEYRYX_SOCKET"),
+			BearerFile: os.Getenv("VOUCHRYX_KEYRYX_CREDENTIAL_FILE"),
+		}
+		if k.BaseURL == "" {
+			return "", nil, errors.New("VOUCHRYX_KEYRYX_URL is required when VOUCHRYX_SIGNER=keyryx: the custody API, for example http://keyryx:4340")
+		}
+		if k.Consumer == "" {
+			return "", nil, errors.New("VOUCHRYX_KEYRYX_CONSUMER is required when VOUCHRYX_SIGNER=keyryx: the consumer name Keyryx's policy grants the key to")
+		}
+		if (k.Socket == "") == (k.BearerFile == "") {
+			return "", nil, errors.New("VOUCHRYX_SIGNER=keyryx needs exactly one of VOUCHRYX_KEYRYX_SOCKET and VOUCHRYX_KEYRYX_CREDENTIAL_FILE")
+		}
+		return "keyryx", k, nil
+	default:
+		return "", nil, fmt.Errorf("VOUCHRYX_SIGNER is %q; it takes file (the default) or keyryx", os.Getenv("VOUCHRYX_SIGNER"))
+	}
+}
+
 // DefaultAddr is where this service listens when nothing says otherwise.
 //
 // It was `127.0.0.1:4300` until 2026-08-26, which is scopyx's, so the two could
@@ -181,18 +216,28 @@ func FromEnv() (Config, error) {
 		c.TTL = time.Duration(n) * time.Second
 	}
 
+	signerName, keyryxCfg, err := signerFromEnv()
+	if err != nil {
+		return c, err
+	}
+	c.Signer, c.Keyryx = signerName, keyryxCfg
+	// The file key is the signer in file mode, so it is required there. In keyryx
+	// mode it is optional: when set, its public half is published beside Keyryx's
+	// key during the migration, and it never signs (invariant 27).
 	path := os.Getenv("VOUCHRYX_SIGNING_KEY")
-	if path == "" {
+	if path == "" && c.Signer == "file" {
 		return c, errors.New("VOUCHRYX_SIGNING_KEY is required: the path to a PEM EC private key")
 	}
-	key, err := loadKey(path)
-	if err != nil {
-		return c, err
-	}
-	c.SigningKey = key
-	c.KeyID, err = delegation.Thumbprint(delegation.FromPublic(&key.PublicKey, ""))
-	if err != nil {
-		return c, err
+	if path != "" {
+		key, err := loadKey(path)
+		if err != nil {
+			return c, err
+		}
+		c.SigningKey = key
+		c.KeyID, err = delegation.Thumbprint(delegation.FromPublic(&key.PublicKey, ""))
+		if err != nil {
+			return c, err
+		}
 	}
 
 	// VOUCHRYX_AGENTS first, because whether VOUCHRYX_TRUSTED_ISSUERS is

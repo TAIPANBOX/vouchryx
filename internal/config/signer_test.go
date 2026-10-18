@@ -37,7 +37,7 @@ func TestTheFileSignerIsTheDefault(t *testing.T) {
 func TestKeyryxModeNeedsItsURLAndItsConsumer(t *testing.T) {
 	for _, drop := range []string{"VOUCHRYX_KEYRYX_URL", "VOUCHRYX_KEYRYX_CONSUMER"} {
 		env := keyryxEnv(t)
-		delete(env, drop)
+		env[drop] = "" // withEnv sets only what it is given; an empty value is unset here
 		withEnv(t, env, func() {
 			_, err := FromEnv()
 			if err == nil || !strings.Contains(err.Error(), drop) {
@@ -51,7 +51,7 @@ func TestKeyryxModeNeedsNoFileKey(t *testing.T) {
 	// The file key is the migration overlap, not the signer: a service that signs
 	// with Keyryx's key starts without it.
 	env := keyryxEnv(t)
-	delete(env, "VOUCHRYX_SIGNING_KEY")
+	env["VOUCHRYX_SIGNING_KEY"] = ""
 	withEnv(t, env, func() {
 		c, err := FromEnv()
 		if err != nil {
@@ -91,7 +91,7 @@ func TestAnUnknownSignerIsRefused(t *testing.T) {
 func TestFileModeStillRequiresItsKey(t *testing.T) {
 	env := baseXAAEnv(t)
 	env["VOUCHRYX_SIGNER"] = "file"
-	delete(env, "VOUCHRYX_SIGNING_KEY")
+	env["VOUCHRYX_SIGNING_KEY"] = ""
 	withEnv(t, env, func() {
 		_, err := FromEnv()
 		if err == nil || !strings.Contains(err.Error(), "VOUCHRYX_SIGNING_KEY") {

@@ -177,6 +177,8 @@ not a convenience.
 - **A TTL longer than the cap.** A long-lived delegation token is the thing this
   service exists to avoid.
 - **Any path that reads a private key into something serialisable.**
+- **A fallback to the file key while no working key is certified** (invariant 27).
+- **A second place that signs a token**, outside `internal/signer` (invariant 27).
 
 11. **A refusal that reaches nobody is not a refusal, it is a silence.** This
     package's doc has promised since it was written that a refusal's detail
@@ -623,11 +625,10 @@ not a convenience.
     and every other verifier reads, not a refactor. On a token exchange, the
     delegation carries `unit` and `org` only from an actor token this service
     minted (its own issuer and the `at+jwt` header), never from an identity
-    provider's token, which may claim either. The header is signed by
-    `signAccessToken`, a copy of agent-stack-go's `SignES256` that writes
-    `at+jwt` where the library writes `JWT`; the tests verify every token it
-    mints with the library's own `VerifyToken`, and the copy goes when the
-    library takes a `typ`.
+    provider's token, which may claim either. The header's `typ` is set by
+    `signer.JWS` (invariant 27), which writes `at+jwt` where the library's
+    `SignES256` writes `JWT`; the tests verify every token it mints with the
+    library's own `VerifyToken`.
     *(tests: `TestAnEnrolledAgentGetsAShortLivedBoundAccessToken` asserts every
     claim and header member by name, `TestAnAgentTokenLivesFiveMinutesWhateverTheConfiguredTTL`
     (configures a one-hour TTL, because the default already equals the cap),
@@ -725,6 +726,44 @@ not a convenience.
     `TestAnUnmarkedTrustedIssuerLineParsesAsItAlwaysDid` pass before and after by
     design, as controls; gate `scripts/every-subject-exchange-asks-the-marker.sh`
     with four teeth cases; scenarios: `features/delegation.feature`)*
+
+27. **In keyryx mode the only key that signs a token is the working key Keyryx
+    certified, and it signs only while that certification is valid.**
+    `@decided 2026-10-17`: the wave-2 decision on this service's signing key
+    (D6 (a)), a working key generated in memory and certified by Keyryx for 72
+    hours, with Keyryx's set published at the URL verifiers already poll.
+    `@claude 2026-10-18`: the rest is this repository's design, open to reversal:
+    the renewal point (keyclient's rule, half the statement's life, which for 72
+    hours is every 36 hours, not the daily cadence the decision names: README
+    NOT PROVEN), the file key published but never used during the overlap, the
+    refusal and the failed health answer while no key is valid, and the one
+    signing seam.
+
+    Every token is signed by `internal/signer`, and nothing else in this
+    repository signs one (gate). The signer reads the key's window itself and
+    refuses a key past its `not_after`, even when the library that handed the key
+    over had a different idea of the time. With no certified key a token request
+    is refused, never signed by the file key: the file key is not a fallback. The
+    served key set is Keyryx's published set, plus the file key's public half only
+    while `VOUCHRYX_SIGNING_KEY` is set in keyryx mode (the overlap), and a key both
+    places name is served once.
+    *(tests: `TestATokenIsSignedWithTheWorkingKeyKeyryxCertified`,
+    `TestNoTokenIsIssuedBeforeAKeyIsCertifiedEvenWithAFileKeyPresent`,
+    `TestNoTokenIsIssuedOnceTheStatementHasRunOut`,
+    `TestTheHealthRouteSaysWhenNoKeyIsCertified`,
+    `TestTheJWKSRouteServesKeyryxsSetAndTheFileKeyOnlyDuringTheOverlap`,
+    `TestTheWorkingKeyIsRenewedAtHalfLifeAndTheNewKeySignsAfterIt`,
+    `TestWithTheFileSignerNothingChanges` (`internal/api`);
+    `TestAnExpiredStatementIsNeverUsedToSign`,
+    `TestTheFileKeyIsNeverUsedWhenNoStatementIsValid`,
+    `TestTheSignedKidIsTheKidTheHeaderNames`,
+    `TestThePublishedSetIsKeyryxsSetAndTheOverlapKeyOnce`,
+    `TestTheWorkingKeyIsCertifiedAtStart` (`internal/signer`);
+    `TestTheFileSignerIsTheDefault`, `TestKeyryxModeNeedsItsURLAndItsConsumer`,
+    `TestKeyryxModeNeedsNoFileKey`, `TestAKeyryxSettingWithoutKeyryxModeIsRefused`,
+    `TestAnUnknownSignerIsRefused`, `TestFileModeStillRequiresItsKey`
+    (`internal/config`); gate `scripts/one-signer-for-every-token.sh` with four
+    teeth cases; scenarios: `features/signing.feature`)*
 
 ## Distribution
 

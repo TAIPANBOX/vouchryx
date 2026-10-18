@@ -29,7 +29,7 @@ if not SRCS:
     print("no non-test .go file exists under internal/api, so this gate measured nothing.")
     sys.exit(1)
 
-signer = re.compile(r"(?<!func )\b(?:delegation\.SignES256|signAccessToken)\(")
+signer = re.compile(r"\.signOrRefuse\(")
 subject_field = re.compile(r'"subject_token"')
 subjects, bad = 0, []
 for src in SRCS:

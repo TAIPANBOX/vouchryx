@@ -15,7 +15,9 @@
 #
 # Every non-test .go file under internal/ and cmd/, except internal/signer (the
 # one place allowed to sign), internal/demo and cmd/vouchryx-demo (they mint the
-# demo identity provider's tokens, which are not this service's). A call to
+# demo identity provider's tokens, which are not this service's), and
+# internal/keyryxtest (a fake custody that signs Keyryx's own statements, for the
+# tests only). A call to
 # delegation.SignES256, to signAccessToken or to ecdsa.Sign anywhere else is a
 # finding. Finding no signing call through internal/api at all is "measured
 # nothing", never OK.
@@ -25,7 +27,7 @@ cd "$(dirname "$0")/.."
 python3 - <<'PY'
 import pathlib, re, sys
 
-EXEMPT = ("internal/signer/", "internal/demo/", "cmd/vouchryx-demo/")
+EXEMPT = ("internal/signer/", "internal/demo/", "cmd/vouchryx-demo/", "internal/keyryxtest/")
 FORBIDDEN = re.compile(r"(?<!func )\b(?:delegation\.SignES256|signAccessToken|ecdsa\.Sign)\(")
 SIGNER_CALL = re.compile(r"\.signOrRefuse\(")
 

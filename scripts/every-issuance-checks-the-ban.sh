@@ -13,7 +13,7 @@
 # HOW THE SUBJECTS ARE FOUND
 #
 # Every non-test file in internal/api/. A function that calls a signer
-# (`delegation.SignES256(` or `signAccessToken(`) must call `.Banned(` on an
+# (`.signOrRefuse(`, the seam in internal/api) must call `.Banned(` on an
 # earlier line of the same function. A function that signs and never asks is a
 # finding; finding no signing call at all is "measured nothing", never OK.
 set -euo pipefail
@@ -27,7 +27,7 @@ if not SRCS:
     print("no non-test .go file exists under internal/api, so this gate measured nothing.")
     sys.exit(1)
 
-signer = re.compile(r"(?<!func )\b(?:delegation\.SignES256|signAccessToken)\(")
+signer = re.compile(r"\.signOrRefuse\(")
 subjects, bad = 0, []
 for src in SRCS:
     lines = src.read_text().split("\n")

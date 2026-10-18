@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -246,4 +247,14 @@ func TestWithTheFileSignerNothingChanges(t *testing.T) {
 // advance moves the shared clock: the stand's own, which every side reads.
 func (s *stand) advance(d time.Duration) {
 	s.now = s.now.Add(d)
+}
+
+// fileSigner is the signer a service without VOUCHRYX_SIGNER has: the file key.
+func fileSigner(t *testing.T, key *ecdsa.PrivateKey, kid string) signer.Signer {
+	t.Helper()
+	fs, err := signer.NewFile(key, kid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fs
 }

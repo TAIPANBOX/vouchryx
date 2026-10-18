@@ -168,9 +168,8 @@ func (s *Server) tokenJWTBearer(w http.ResponseWriter, r *http.Request) {
 	if scope != "" {
 		claims["scope"] = scope
 	}
-	signed, err := delegation.SignES256(s.Cfg.SigningKey, s.Cfg.KeyID, claims)
-	if err != nil {
-		refuse(w, http.StatusInternalServerError, "server_error", "signing_failed", map[string]any{"detail": err.Error(), "kid": s.Cfg.KeyID})
+	signed, ok := s.signOrRefuse(w, "JWT", claims)
+	if !ok {
 		return
 	}
 

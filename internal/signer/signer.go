@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"time"
 
@@ -139,33 +140,76 @@ func newDelegated(keys keySource, jwks jwksSource, overlap *delegation.JWK, now 
 	return &Delegated{keys: keys, jwks: jwks, overlap: overlap, now: now}
 }
 
-// Sign is the naive version: it signs with whatever key Current returns, and
-// hands back the kid the signer reports, whatever the build saw. The wave-2
-// fix replaces it.
+// Sign signs with the working key valid now. It reads the key, checks its
+// window against the clock itself (keyclient refuses an expired key too; this
+// check does not rest on that alone), lets build name the kid, and signs. A
+// renewal between the read and the signature can make another key the valid one;
+// the signature then names that key, which is not the kid build saw, so the
+// signer reads again and builds again rather than pair the two.
 func (d *Delegated) Sign(build func(kid string) []byte) (string, []byte, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		k, err := d.current()
+		if err != nil {
+			return "", nil, err
+		}
+		sig, err := d.keys.Sign(build(k.Kid))
+		if err != nil {
+			return "", nil, fmt.Errorf("%w: %v", ErrNotCertified, err)
+		}
+		if sig.Kid == k.Kid {
+			return sig.Kid, sig.Sig, nil
+		}
+	}
+	return "", nil, fmt.Errorf("%w: the valid key kept changing while it was read", ErrNotCertified)
+}
+
+// current is the key valid at the clock's time, or ErrNotCertified. The window
+// check is repeated here on purpose: a key past its not_after is never used, even
+// if the library that handed it over had a different idea of the time.
+func (d *Delegated) current() (keyclient.Key, error) {
 	k, err := d.keys.Current()
 	if err != nil {
-		return "", nil, err
+		return keyclient.Key{}, fmt.Errorf("%w: %v", ErrNotCertified, err)
 	}
-	sig, err := d.keys.Sign(build(k.Kid))
-	if err != nil {
-		return "", nil, err
+	now := d.now()
+	if now.Before(k.NotBefore) || !now.Before(k.NotAfter) {
+		return keyclient.Key{}, fmt.Errorf("%w: the key's statement is not valid at %s", ErrNotCertified, now.UTC().Format(time.RFC3339))
 	}
-	return sig.Kid, sig.Sig, nil
+	return k, nil
 }
 
-// Public is the naive version: the cached set only, without the overlap key.
+// Public is the cached set Keyryx published for this name, and the file key's
+// public half beside it during the overlap. A key both places name is served
+// once.
 func (d *Delegated) Public() delegation.Set {
-	return d.jwks.Set()
+	set := d.jwks.Set()
+	keys := append([]delegation.JWK{}, set.Keys...)
+	if d.overlap != nil && !hasKid(keys, d.overlap.Kid) {
+		keys = append(keys, *d.overlap)
+	}
+	return delegation.Set{Keys: keys}
 }
 
-// Ready is the naive version: it asks Current and nothing else.
+func hasKid(keys []delegation.JWK, kid string) bool {
+	for _, k := range keys {
+		if k.Kid == kid {
+			return true
+		}
+	}
+	return false
+}
+
+// Ready is nil when a key is certified and valid now.
 func (d *Delegated) Ready() error {
-	_, err := d.keys.Current()
+	_, err := d.current()
 	return err
 }
 
 // StartDelegated starts the renewal loop of the working key and the poller of
-// its name's key set, until ctx is done. Each failure is reported to onErr.
-// SCAFFOLD: starts nothing.
-func StartDelegated(_ context.Context, _ *keyclient.Delegated, _ *keyclient.JWKS, _ func(error)) {}
+// its name's key set, until ctx is done. Each failure is reported to onErr. The
+// key is asked for at once, so a service that starts with Keyryx up is signing
+// before its first request.
+func StartDelegated(ctx context.Context, d *keyclient.Delegated, j *keyclient.JWKS, onErr func(error)) {
+	go d.Run(ctx, onErr)
+	go j.Run(ctx, PollEvery, onErr)
+}
