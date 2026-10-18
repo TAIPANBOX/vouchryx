@@ -32,7 +32,7 @@ const AgentTokenTyp = "at+jwt"
 
 // ClientAssertionJWTBearer is RFC 7523 section 2.2's client assertion type,
 // the one a workload token is presented under.
-const ClientAssertionJWTBearer = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+const ClientAssertionJWTBearer = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" // #nosec G101 -- OAuth client-assertion-type URN, not a credential
 
 // agentTokenMaxTTL is invariant 24's cap: five minutes, whatever
 // VOUCHRYX_TTL_SECONDS lets a delegation live. A shorter configured TTL is
