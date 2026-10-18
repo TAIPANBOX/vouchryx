@@ -51,6 +51,10 @@ type Issuer struct {
 	// for the reason the plan gives: the PDP runs at a 3.2 ms p50 and a
 	// network fetch inside the request path taxes every delegation.
 	Keys delegation.Set
+	// Unbound marks an issuer whose subject tokens carry no `cnf.jkt`. Set
+	// only by the operator, with a fourth `|unbound` field on its
+	// VOUCHRYX_TRUSTED_ISSUERS line; never read from a token (invariant 26).
+	Unbound bool
 }
 
 // Config is everything this process needs.
@@ -281,6 +285,13 @@ func (c Config) AllowsAudience(aud string) bool {
 		return aud != "" && aud == c.Issuer
 	}
 	return xaa.Configured(aud, c.AllowedAudiences)
+}
+
+// IssuesUnbound reports whether the operator marked this trusted issuer as one
+// whose subject tokens carry no `cnf.jkt`. SCAFFOLD: answers as the code did
+// before the marker existed, every issuer may send unbound tokens.
+func (c Config) IssuesUnbound(iss string) bool {
+	return true
 }
 
 // FindIssuer returns the trusted issuer with this `iss`.
