@@ -14,6 +14,8 @@ package manifest_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/TAIPANBOX/vouchryx/internal/demo"
 )
 
 type manifest struct {
@@ -615,5 +619,106 @@ func TestAnEmptyAudienceInTrustedIssuersRefusesTheBinaryNamingTheIssuer(t *testi
 		<-done
 		t.Fatal("the service is still running with a trusted issuer that has no audience; " +
 			"it must refuse to start rather than accept a token for any audience")
+	}
+}
+
+// One action stops an agent and keeps it stopped across a crash, and one
+// action lets it back (invariant 25), measured on the BUILT binary with no
+// trusted issuer at all: an agents-only service, the shape a launcher runs
+// when its agents have no human identity provider (invariant 23).
+func TestAnAgentIsStoppedAndLetBackAcrossARealRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts processes")
+	}
+	_, r := load(t)
+	bin := filepath.Join(t.TempDir(), "vouchryx")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/vouchryx")
+	build.Dir = r
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building: %v\n%s", err, out)
+	}
+	const agent, enrolment, revokeKey = "agent://acme.example/agents/triage", "manifest-enrolment-key-0123456789", "manifest-revoke-key-0123456789"
+	sum := sha256.Sum256([]byte(enrolment))
+	full := workingEnvironment(t, r)
+	delete(full, "VOUCHRYX_TRUSTED_ISSUERS")
+	full["VOUCHRYX_AGENTS"] = agent + "|agents|default|sha256:" + hex.EncodeToString(sum[:])
+	full["VOUCHRYX_REVOKE_KEYS"] = revokeKey
+	full["VOUCHRYX_REVOCATIONS_PATH"] = filepath.Join(t.TempDir(), "revocations.ndjson")
+	env := []string{}
+	for k, v := range full {
+		env = append(env, k+"="+v)
+	}
+	addr, issuer := full["VOUCHRYX_ADDR"], full["VOUCHRYX_ISSUER"]
+	start := func() *exec.Cmd {
+		cmd := exec.Command(bin)
+		cmd.Env = env
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if !waitFor(addr, 10*time.Second) {
+			_ = cmd.Process.Kill()
+			t.Fatalf("the agents-only service never listened on %s", addr)
+		}
+		return cmd
+	}
+	holder, err := demo.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	issue := func() int {
+		n++
+		proof, err := demo.Proof(holder, "POST", issuer+"/v1/token", fmt.Sprintf("manifest-%d-%d", n, time.Now().UnixNano()), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, _ := http.NewRequest("POST", "http://"+addr+"/v1/token", strings.NewReader("grant_type=client_credentials"))
+		req.Header.Set("content-type", "application/x-www-form-urlencoded")
+		req.Header.Set("DPoP", proof)
+		req.SetBasicAuth(agent, enrolment)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	admin := func(path, body string) int {
+		req, _ := http.NewRequest("POST", "http://"+addr+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+revokeKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	first := start()
+	if got := issue(); got != http.StatusOK {
+		_ = first.Process.Kill()
+		t.Fatalf("before the ban the enrolled agent got %d", got)
+	}
+	if got := admin("/v1/revoke", `{"subject":"`+agent+`","ban":true,"actor":"user://acme.example/op","reason":"stopped"}`); got != http.StatusOK {
+		_ = first.Process.Kill()
+		t.Fatalf("the ban answered %d", got)
+	}
+	if got := issue(); got != http.StatusBadRequest {
+		_ = first.Process.Kill()
+		t.Fatalf("right after the ban the agent got %d", got)
+	}
+	_ = first.Process.Kill()
+	_ = first.Wait()
+
+	second := start()
+	defer func() { _ = second.Process.Kill(); _ = second.Wait() }()
+	if got := issue(); got != http.StatusBadRequest {
+		t.Fatalf("after a SIGKILL and a restart the banned agent got %d: the ban did not survive", got)
+	}
+	if got := admin("/v1/revoke/lift", `{"subject":"`+agent+`","actor":"user://acme.example/op","reason":"fixed"}`); got != http.StatusOK {
+		t.Fatalf("the lift answered %d", got)
+	}
+	if got := issue(); got != http.StatusOK {
+		t.Fatalf("after the lift the agent got %d", got)
 	}
 }

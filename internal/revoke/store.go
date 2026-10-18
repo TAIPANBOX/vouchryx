@@ -33,6 +33,8 @@ type Loaded struct {
 	Active   []Entry
 	Expired  int
 	TornTail bool
+	// Standing: scaffold for invariant 25.
+	Standing []Entry
 }
 
 // OpenStore reads every entry at path, keeps the ones still load-bearing at

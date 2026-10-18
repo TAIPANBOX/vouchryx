@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/TAIPANBOX/agent-stack-go/delegation"
+	"github.com/TAIPANBOX/vouchryx/internal/agents"
 	"github.com/TAIPANBOX/vouchryx/internal/xaa"
 )
 
@@ -89,6 +90,9 @@ type Config struct {
 	XAARequireDPoP bool
 	// AllowedAudiences is the parsed VOUCHRYX_ALLOWED_AUDIENCES list.
 	AllowedAudiences []string
+	// Agents and Workloads: scaffold for invariant 23.
+	Agents    *agents.Registry
+	Workloads []Issuer
 }
 
 // DefaultAddr is where this service listens when nothing says otherwise.
@@ -416,3 +420,6 @@ func splitLines(s string) []string {
 	}
 	return out
 }
+
+// FindWorkloadIssuer is scaffold for invariant 23.
+func (c Config) FindWorkloadIssuer(iss string) (Issuer, bool) { return Issuer{}, false }

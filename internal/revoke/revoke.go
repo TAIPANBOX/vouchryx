@@ -74,6 +74,9 @@ type Entry struct {
 	// outage somebody has to reconstruct from timing.
 	Actor  string `json:"actor"`
 	Reason string `json:"reason"`
+	// Ban and Lift: scaffold for invariant 25.
+	Ban  bool `json:"ban,omitempty"`
+	Lift bool `json:"lift,omitempty"`
 }
 
 // PublicEntry is one revocation as the PUBLIC list serves it: exactly what a
@@ -222,3 +225,12 @@ func (l *List) RevokedAny(jti string, parties []string, issuedAt int64, now time
 	}
 	return Entry{}, false
 }
+
+// Banned is scaffold for invariant 25: nothing is ever banned yet.
+func (l *List) Banned(parties []string) (Entry, bool) { return Entry{}, false }
+
+// Lift is scaffold for invariant 25.
+func (l *List) Lift(subject string) bool { return false }
+
+// Bans is scaffold for invariant 25.
+func (l *List) Bans() []Entry { return nil }
