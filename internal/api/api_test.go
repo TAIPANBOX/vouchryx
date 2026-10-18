@@ -59,6 +59,7 @@ func newStand(t *testing.T) *stand {
 		holder: holder,
 		now:    now,
 		srv: &Server{
+			Signer: fileSigner(t, signing, kid),
 			Cfg: config.Config{
 				Issuer:     ourIss,
 				SigningKey: signing,

@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-289-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-311-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -124,7 +124,7 @@ switch, different axis, and the second is the one an incident needs.
 | `GET /v1/revocations` | What enforcement points poll, with no credential. Carries `as_of`, so an empty list and an unreachable service are not the same answer. Each entry carries only what a verifier needs to refuse a token: `jti`, `subject`, `issued_before`, `expires`. It does **not** carry the `actor` or the `reason` of the revocation: those stay in the operator's record (the event stream and the `VOUCHRYX_REVOCATIONS_PATH` store), so the public list does not say who revoked a token or why. |
 | `GET /.well-known/jwks.json` | Public keys, so verification is offline. |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata: this service's own endpoints and grants. Names no trusted issuer and no configured client. |
-| `GET /healthz` | Liveness, with no credential: always `200` once the process is listening, and it checks nothing else. |
+| `GET /healthz` | With no credential. `200` once the process is listening; in keyryx mode (`VOUCHRYX_SIGNER=keyryx`) `503` until a working key is certified, so it then reads as readiness (see NOT PROVEN). |
 
 There is deliberately **no introspection endpoint**. It would put this service
 on the request path of every enforcement point at once.
@@ -148,7 +148,7 @@ docker run --rm -p 4310:4310 \
   ghcr.io/taipanbox/vouchryx:v0.4.0
 ```
 
-The three required variables are `VOUCHRYX_ISSUER`, `VOUCHRYX_SIGNING_KEY` and
+The three required variables are `VOUCHRYX_ISSUER`, `VOUCHRYX_SIGNING_KEY` (unless `VOUCHRYX_SIGNER=keyryx`) and
 `VOUCHRYX_TRUSTED_ISSUERS` (see Configuration, below); a missing one aborts the
 process, exit code 2, before it binds a socket. `vouchryx-demo` ships in the
 same image; reach it with `docker run --entrypoint vouchryx-demo ...` instead.
@@ -194,7 +194,18 @@ VOUCHRYX_ADDR             where to listen (default 127.0.0.1:4310)
 VOUCHRYX_ISSUER           the `iss` this service puts on every token it mints,
                           and the base every DPoP htu is checked against, so
                           behind a TLS terminator it must be the public URL
-VOUCHRYX_SIGNING_KEY      path to a PEM EC private key; it issues ES256
+VOUCHRYX_SIGNING_KEY      path to a PEM EC private key; it issues ES256. Optional
+                          with VOUCHRYX_SIGNER=keyryx, where it is the overlap key
+VOUCHRYX_SIGNER           `file` (default) or `keyryx`: a working key Keyryx
+                          certifies, generated in memory and renewed, instead of
+                          the key file (CLAUDE.md invariant 27)
+VOUCHRYX_KEYRYX_URL       the Keyryx custody API origin, for example
+                          http://keyryx:4340; required with keyryx
+VOUCHRYX_KEYRYX_CONSUMER  the consumer name Keyryx's policy grants the key to;
+                          required with keyryx
+VOUCHRYX_KEYRYX_SOCKET    the unix socket custody gave this consumer, or
+VOUCHRYX_KEYRYX_CREDENTIAL_FILE  its key or projected token file: exactly one of
+                          the two with keyryx; any KEYRYX variable with file is refused
 VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path`, one per line; add `|unbound`
                           for an issuer whose subject tokens carry no key
                           (such a token is refused without the marker)
@@ -434,9 +445,14 @@ refused leaves the ban standing.
 
 ## Where the crypto lives
 
-**Not here.** Signing, verification, the algorithm allowlist, the DPoP proof
-check and the `act` chain are `agent-stack-go/delegation`, pinned at v1.3.0 (`go.mod`). This
-service imports it, and today it is the only Go service that does: measured
+**Not here.** Verification, the algorithm allowlist, the DPoP proof check and
+the `act` chain are `agent-stack-go/delegation`, pinned in `go.mod` (at a merged
+`keyclient` commit, since the wave-2 signing work; the release that carries it is
+the owner's to tag). The JWS of a token this service issues is assembled by
+`internal/signer` (CLAUDE.md invariant 27), which signs with the file key, or,
+with `VOUCHRYX_SIGNER=keyryx`, with the working key held by `keyclient` and
+certified by Keyryx. `delegation.SignES256` is no longer called. This
+service imports the library, and today it is the only Go service that does: measured
 2026-09-16 over every Go repository in the stack, `wardryx`, `idryx`,
 `scopyx`, `heraldyx` and `mockryx` import nothing from that package. What this
 service issues is verified at TokenFuse's two doors (its Rust `delegation`
@@ -499,7 +515,7 @@ line, both written every time.
 
 ## Testing
 
-233 tests. Tier T3: these are authorization decisions where a wrong answer is
+255 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **Ten mutants were planted in the security paths while that code lived here;
@@ -574,10 +590,28 @@ Stated here rather than left to be discovered.
   `VOUCHRYX_ALLOWED_AUDIENCES` decides which resources a delegation may be
   spent at. Nothing here checks that a listed URL is the resource the operator
   meant, and an audience left off the list is refused, not reconciled.
-- **The signing key is single.** The published key set holds one key, so a
-  rotation replaces it at once: tokens issued under the old key stop verifying
-  at every verifier that has polled the new set, and no overlap period, in
-  which both keys are published, exists. Not built and not measured.
+- **In file mode the signing key is single.** The published key set holds one
+  key, so a rotation replaces it at once: tokens issued under the old key stop
+  verifying at every verifier that has polled the new set, and no overlap period
+  exists. In keyryx mode Keyryx publishes the working key's current and next
+  keys, and this service serves that set as it gets it; the overlap is Keyryx's
+  to keep, and the tests here use a fake custody, not Keyryx.
+- **The working key is renewed at half its life.** For the 72-hour statement
+  that is every 36 hours. The wave-2 decision names a daily renewal; keyclient
+  renews at half the statement's life, and a 48-hour statement would give a
+  daily cadence. Not changed here.
+- **The statement's root signatures are not checked here.** keyclient checks the
+  statement's claims against what it asked for and trusts the channel to custody
+  (its own NOT PROVEN). A socket or a bearer credential is the channel.
+- **A failed certification is retried on keyclient's fixed five-minute wait.** A
+  Keyryx that comes back is used within that wait; the service issues nothing
+  until then.
+- **A fresh key is used only after this service's cache holds it.** The cache is
+  refreshed every ten seconds, so a new certification waits up to that long
+  before the first token, and health answers `503` meanwhile.
+- **`/healthz` is a readiness signal in keyryx mode.** It answers `503` while no
+  working key is certified. A liveness probe on that path would restart the
+  process while Keyryx is down, and the restart would not help.
 - **Where a `subject_token` comes from is out of scope.** This accepts one from
   a configured issuer; obtaining it from a customer's own IdP is a deployment
   shape that does not exist yet.

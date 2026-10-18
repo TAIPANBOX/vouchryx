@@ -145,7 +145,7 @@ fault_all_multi "refusals: the responses it reads are gone" \
 
 # And it must not fire on a success, which is most of what the surface writes.
 fault "refusals: a success response moved" \
-  internal/api/api.go 'writeJSON(w, http.StatusOK, s.Cfg.PublicSet())' 'writeJSON(w, http.StatusOK, s.Cfg.PublicSet()) //nolint' \
+  internal/api/api.go 'writeJSON(w, http.StatusOK, s.Signer.Public())' 'writeJSON(w, http.StatusOK, s.Signer.Public()) //nolint' \
   pass ./scripts/every-refusal-reaches-the-operator.sh
 
 # A ban is only a stop if every path that signs asks first (invariant 25).
@@ -171,7 +171,7 @@ fault "issuance: the ban check survives only as a comment" \
 # The subjects are discovered: with no signing call left the gate must say it
 # measured nothing rather than pass over an empty set.
 fault_all_multi "issuance: no signing call is left to judge" \
-  "internal/api/api.go internal/api/xaa.go internal/api/agents.go" '(s.Cfg.SigningKey, s.Cfg.KeyID, claims)' 'Nothing()' \
+  "internal/api/api.go internal/api/xaa.go internal/api/agents.go" 's.signOrRefuse(' 'nothingSigns(' \
   fail ./scripts/every-issuance-checks-the-ban.sh
 
 # And it must not fire on an edit that leaves every check in place.
@@ -199,6 +199,25 @@ fault "unbound: no subject token is read, so nothing is left to judge" \
 fault "unbound: an unrelated comment beside the marker check" \
   internal/api/api.go 'if subjectJKT == "" && !s.Cfg.IssuesUnbound(subIss) {' 'if subjectJKT == "" && !s.Cfg.IssuesUnbound(subIss) { // asked' \
   pass ./scripts/every-subject-exchange-asks-the-marker.sh
+
+# Every token is signed through internal/signer (invariant 27). A direct call to
+# the library's signer, or a private copy of one, bypasses the working key's
+# window and the overlap rule, and the signer's own tests would still pass.
+fault "one signer: the exchange signs with the library's call" \
+  internal/api/api.go 'signed, ok := s.signOrRefuse(w, "JWT", claims)' '_, _ = delegation.SignES256(nil, "", claims); signed, ok := s.signOrRefuse(w, "JWT", claims)' \
+  fail ./scripts/one-signer-for-every-token.sh
+
+fault "one signer: the agent grant signs with a private copy of the signing call" \
+  internal/api/agents.go 'signed, ok := s.signOrRefuse(w, "at+jwt", claims)' '_, _, _ = ecdsa.Sign(nil, nil, nil); signed, ok := s.signOrRefuse(w, "at+jwt", claims)' \
+  fail ./scripts/one-signer-for-every-token.sh
+
+fault_all_multi "one signer: no signing call goes through the seam" \
+  "internal/api/api.go internal/api/xaa.go internal/api/agents.go" 's.signOrRefuse(' 'nothingSigns(' \
+  fail ./scripts/one-signer-for-every-token.sh
+
+fault "one signer: the library's name in a comment is not a call" \
+  internal/api/api.go 'signed, ok := s.signOrRefuse(w, "JWT", claims)' 'signed, ok := s.signOrRefuse(w, "JWT", claims) // delegation.SignES256(key, kid, claims)' \
+  pass ./scripts/one-signer-for-every-token.sh
 
 fault "base images: a FROM loses its digest and falls back to a moving tag" \
   Dockerfile 'golang@sha256:5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c' 'golang:1.27' \

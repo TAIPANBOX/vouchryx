@@ -10,7 +10,12 @@
 //
 //	VOUCHRYX_ADDR             where to listen (default 127.0.0.1:4310)
 //	VOUCHRYX_ISSUER           the `iss` this service puts on every token
-//	VOUCHRYX_SIGNING_KEY      PEM EC private key; ES256 is what it issues
+//	VOUCHRYX_SIGNING_KEY      PEM EC private key; ES256 is what it issues, unless VOUCHRYX_SIGNER=keyryx
+//	VOUCHRYX_SIGNER           "file" (default) or "keyryx": a working key Keyryx certifies, in memory, renewed
+//	VOUCHRYX_KEYRYX_URL       keyryx custody API origin, required with keyryx
+//	VOUCHRYX_KEYRYX_CONSUMER  the consumer name Keyryx's policy grants the key to, required with keyryx
+//	VOUCHRYX_KEYRYX_SOCKET    the unix socket custody gave this consumer, or
+//	VOUCHRYX_KEYRYX_CREDENTIAL_FILE  its key or projected token file: exactly one of the two with keyryx
 //	VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path[|unbound]` per line; optional once VOUCHRYX_AGENTS enrols an agent
 //	VOUCHRYX_TTL_SECONDS      default 300, capped at one hour
 //	VOUCHRYX_EVENTS_PATH      agent-event NDJSON, optional
@@ -52,9 +57,15 @@ func main() {
 		os.Exit(2)
 	}
 
+	sg, err := buildSigner(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vouchryx: refusing to start: %v\n", err)
+		os.Exit(2)
+	}
 	revs := revoke.New()
 	srv := &api.Server{
 		Cfg:    cfg,
+		Signer: sg,
 		Revs:   revs,
 		Proofs: delegation.NewVerifier(),
 		// Wired unconditionally, whether or not VOUCHRYX_CLIENTS is set: the

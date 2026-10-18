@@ -24,6 +24,7 @@ import (
 	"github.com/TAIPANBOX/vouchryx/internal/config"
 	"github.com/TAIPANBOX/vouchryx/internal/demo"
 	"github.com/TAIPANBOX/vouchryx/internal/revoke"
+	"github.com/TAIPANBOX/vouchryx/internal/signer"
 	"github.com/TAIPANBOX/vouchryx/internal/xaa"
 )
 
@@ -72,7 +73,12 @@ func realServer(t *testing.T) *stand {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Second)
+	fs, err := signer.NewFile(signing, kid)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := &api.Server{
+		Signer: fs,
 		Cfg: config.Config{
 			Issuer:     ourIss,
 			SigningKey: signing,

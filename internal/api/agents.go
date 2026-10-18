@@ -1,13 +1,8 @@
 package api
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -119,9 +114,8 @@ func (s *Server) tokenClientCredentials(w http.ResponseWriter, r *http.Request) 
 		"org":       agent.Org,
 		"auth_src":  agent.AuthSource(),
 	}
-	signed, err := signAccessToken(s.Cfg.SigningKey, s.Cfg.KeyID, claims)
-	if err != nil {
-		refuse(w, http.StatusInternalServerError, "server_error", "signing_failed", map[string]any{"detail": err.Error(), "kid": s.Cfg.KeyID})
+	signed, ok := s.signOrRefuse(w, "at+jwt", claims)
+	if !ok {
 		return
 	}
 	s.emit("delegation_issued", agent.ID, nil, map[string]any{
@@ -248,42 +242,6 @@ func oneRequestedAudience(r *http.Request) (string, bool) {
 		return "", true
 	}
 	return seen[0], true
-}
-
-// signAccessToken signs ES256 with the header `typ` an access token needs.
-//
-// It exists because agent-stack-go's SignES256 writes `typ: JWT` and takes no
-// header of its own, and RFC 9068 asks for `at+jwt`. Everything else is that
-// function's, line for line: the P-256 check, the fixed-width R||S signature.
-// What it signs with is the same key, and every token it mints is verified in
-// this repository's tests by agent-stack-go's own VerifyToken against the
-// published key set, so the two cannot drift apart without a test going red.
-// When agent-stack-go grows a `typ` parameter this function is deleted.
-// It never serialises the private key.
-func signAccessToken(key *ecdsa.PrivateKey, kid string, claims map[string]any) (string, error) {
-	if key == nil || key.Curve != elliptic.P256() {
-		return "", errors.New("api: an access token is signed ES256 with a P-256 key only")
-	}
-	header := map[string]any{"alg": "ES256", "typ": AgentTokenTyp, "kid": kid}
-	h, err := json.Marshal(header)
-	if err != nil {
-		return "", err
-	}
-	p, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	signing := base64.RawURLEncoding.EncodeToString(h) + "." + base64.RawURLEncoding.EncodeToString(p)
-	sum := sha256.Sum256([]byte(signing))
-	rs, ss, err := ecdsa.Sign(rand.Reader, key, sum[:])
-	if err != nil {
-		return "", err
-	}
-	const size = 32
-	sig := make([]byte, 2*size)
-	rs.FillBytes(sig[:size])
-	ss.FillBytes(sig[size:])
-	return signing + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
 // isOwnAgentToken reports whether a verified input token is an agent token this

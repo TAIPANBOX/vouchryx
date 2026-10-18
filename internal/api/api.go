@@ -46,6 +46,7 @@ import (
 	"github.com/TAIPANBOX/agent-stack-go/event"
 	"github.com/TAIPANBOX/vouchryx/internal/config"
 	"github.com/TAIPANBOX/vouchryx/internal/revoke"
+	"github.com/TAIPANBOX/vouchryx/internal/signer"
 	"github.com/TAIPANBOX/vouchryx/internal/xaa"
 )
 
@@ -81,7 +82,9 @@ type RevocationStore interface {
 // Server holds what the handlers need. Nothing here is mutable except the
 // revocation list and the proof cache, both of which own their own locking.
 type Server struct {
-	Cfg    config.Config
+	Cfg config.Config
+	// Signer signs every token this server issues (CLAUDE.md invariant 27).
+	Signer signer.Signer
 	Revs   *revoke.List
 	Store  RevocationStore
 	Proofs *delegation.Verifier
@@ -108,6 +111,12 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /.well-known/jwks.json", s.jwks)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.authServerMetadata)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		// With no certified key this service issues nothing, so it is not ready,
+		// and it says so (invariant 27). A file-keyed service is always ready.
+		if err := s.Signer.Ready(); err != nil {
+			refuse(w, http.StatusServiceUnavailable, "temporarily_unavailable", "no_certified_signing_key", map[string]any{"detail": err.Error()})
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 	return mux
@@ -120,14 +129,13 @@ func (s *Server) now() time.Time {
 	return time.Now()
 }
 
-// jwks publishes the public half of the signing key.
-//
-// `Cfg.PublicSet` builds it from the public key only. There is no path in this
-// package that can serialize a private key, which is why the check lives in
-// `delegation.FromPublic`'s signature rather than in a filter here: a filter can be
-// forgotten, a type cannot.
+// jwks publishes the keys tokens verify against: the signer's set, which is
+// Keyryx's published set for the working key and, during the overlap, the file
+// key's public half (invariant 27). Only public members are built, by
+// `delegation.FromPublic`'s signature, so a private key cannot reach this
+// response (invariant 9).
 func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.Cfg.PublicSet())
+	writeJSON(w, http.StatusOK, s.Signer.Public())
 }
 
 // revocations is the list enforcement points poll, with no credential.
@@ -452,9 +460,8 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	signed, err := delegation.SignES256(s.Cfg.SigningKey, s.Cfg.KeyID, claims)
-	if err != nil {
-		refuse(w, http.StatusInternalServerError, "server_error", "signing_failed", map[string]any{"detail": err.Error(), "kid": s.Cfg.KeyID})
+	signed, ok := s.signOrRefuse(w, "JWT", claims)
+	if !ok {
 		return
 	}
 
@@ -942,6 +949,23 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("content-type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// signOrRefuse signs claims through the server's signer, as a JWS whose header
+// typ is typ (invariant 27). With no certified key the answer is a refusal and no
+// token; any other failure is a server error. ok is false when a refusal was
+// written.
+func (s *Server) signOrRefuse(w http.ResponseWriter, typ string, claims map[string]any) (string, bool) {
+	tok, err := signer.JWS(s.Signer, typ, claims)
+	if err != nil {
+		if errors.Is(err, signer.ErrNotCertified) {
+			refuse(w, http.StatusServiceUnavailable, "temporarily_unavailable", "no_certified_signing_key", map[string]any{"detail": err.Error()})
+			return "", false
+		}
+		refuse(w, http.StatusInternalServerError, "server_error", "signing_failed", map[string]any{"detail": err.Error()})
+		return "", false
+	}
+	return tok, true
 }
 
 func merge(a, b map[string]any) map[string]any {
