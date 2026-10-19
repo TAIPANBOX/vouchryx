@@ -131,13 +131,13 @@ on the request path of every enforcement point at once.
 
 ## Install
 
-Pull the published image (`ghcr.io/taipanbox/vouchryx:v0.5.0`, built for
+Pull the published image (`ghcr.io/taipanbox/vouchryx:v0.6.0`, built for
 `linux/amd64` and `linux/arm64` by `.github/workflows/release.yml`, signed
 keyless and carrying an SBOM and a provenance attestation), or build from
 source.
 
 ```sh
-docker pull ghcr.io/taipanbox/vouchryx:v0.5.0
+docker pull ghcr.io/taipanbox/vouchryx:v0.6.0
 
 docker run --rm -p 4310:4310 \
   -e VOUCHRYX_ADDR=0.0.0.0:4310 \
@@ -145,7 +145,7 @@ docker run --rm -p 4310:4310 \
   -e VOUCHRYX_SIGNING_KEY=/keys/signing.pem \
   -e VOUCHRYX_TRUSTED_ISSUERS='https://idp.example.com|https://vouchryx.example.com|/keys/idp.jwks.json' \
   -v "$(pwd)/keys":/keys:ro \
-  ghcr.io/taipanbox/vouchryx:v0.5.0
+  ghcr.io/taipanbox/vouchryx:v0.6.0
 ```
 
 The three required variables are `VOUCHRYX_ISSUER`, `VOUCHRYX_SIGNING_KEY` (unless `VOUCHRYX_SIGNER=keyryx`) and
@@ -172,10 +172,10 @@ attestation and an SBOM, from the first tag on. With `cosign` and `gh`
 installed:
 
 ```sh
-cosign verify ghcr.io/taipanbox/vouchryx:v0.5.0 \
+cosign verify ghcr.io/taipanbox/vouchryx:v0.6.0 \
   --certificate-identity-regexp '^https://github.com/TAIPANBOX/vouchryx/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-gh attestation verify oci://ghcr.io/taipanbox/vouchryx:v0.5.0 -R TAIPANBOX/vouchryx
+gh attestation verify oci://ghcr.io/taipanbox/vouchryx:v0.6.0 -R TAIPANBOX/vouchryx
 ```
 
 ## Configuration
