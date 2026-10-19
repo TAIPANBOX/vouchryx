@@ -179,6 +179,7 @@ not a convenience.
 - **Any path that reads a private key into something serialisable.**
 - **A fallback to the file key while no working key is certified** (invariant 27).
 - **A second place that signs a token**, outside `internal/signer` (invariant 27).
+- **A working key used before its statement verifies** (invariant 28).
 
 11. **A refusal that reaches nobody is not a refusal, it is a silence.** This
     package's doc has promised since it was written that a refusal's detail
@@ -767,6 +768,57 @@ not a convenience.
     `TestAnUnknownSignerIsRefused`, `TestFileModeStillRequiresItsKey`
     (`internal/config`); gate `scripts/one-signer-for-every-token.sh` with four
     teeth cases; scenarios: `features/signing.feature`)*
+
+28. **A working key is used only when its statement verifies against the pinned
+    delegation root.** `@claude 2026-10-19`: this repository's reading of the wave-2
+    design (the statement is the one evidence that Keyryx certified a key), open to
+    reversal. The pin is the kids of the root, one ES384 and one ML-DSA-65, read from
+    `VOUCHRYX_KEYRYX_ROOT_PIN`, the form keyryx's `KEYRYX_WITNESS_DELEGATION_ROOT_PIN`
+    already takes. The root's keys are read once from custody and each is accepted
+    only if its kid is the thumbprint of that key and the kid is pinned, so the
+    channel carries the bytes and the pin decides. Where the root comes from is the
+    part the owner has not yet ruled on (README NOT PROVEN).
+
+    A statement is a JWS with exactly two signatures, ES384 and ML-DSA-65, each over
+    `protected "." payload`, and both must verify under a pinned root key that the
+    payload names. `internal/statement` checks both halves, then the claims: the name
+    and the owner this service asked for, the kid and the point of the key the signer
+    generated, the window the key was certified for, and the window now. `internal/signer`
+    checks the statement in `current()`, before the served-set test and before any key
+    is handed to a signature (gate: `scripts/statement-checked-before-use.sh`, which
+    also holds that no read of a delegated key sits outside the signer). With no
+    checker configured every key is unverified, so nothing is signed.
+
+    A key whose statement does not verify is refused like a key that is not
+    certified. The reason, `signing_statement_not_verified` rather than
+    `no_certified_signing_key`, goes to the operator's log through `refuse` (invariant
+    11), so an operator reading the log can tell the two apart. The answer to the
+    caller and to health stays the one oracle-free code (invariant 5). The root is re-read only after a
+    failed read has waited ten seconds, so a custody that is down is not asked on
+    every call. The pin is required with `VOUCHRYX_SIGNER=keyryx`, and a malformed one
+    refuses the start (invariant 8). The startup log names the pinned kids.
+    *(tests: `TestAStatementCertifiedByThePinnedRootVerifies`,
+    `TestAStatementWithAForgedClassicalHalfIsRefused`,
+    `TestAStatementWithAForgedMLDSAHalfIsRefused`,
+    `TestAStatementWithOnlyOneHalfIsRefused`,
+    `TestAStatementSignedByAnUnpinnedRootIsRefused`,
+    `TestAStatementNamingOtherRootsIsRefused`,
+    `TestAHostileStatementNeverVerifiesAndNeverPanics`,
+    `TestAStatementCertifyingAnotherKeyIsRefusedAtUse`,
+    `TestAStatementForAnotherNameOrOwnerIsRefusedAtUse`,
+    `TestAStatementWhoseWindowIsNotTheKeysIsRefusedAtUse`,
+    `TestAStatementOutsideItsWindowIsRefusedAtUse`,
+    `TestTheCheckerReadsTheRootFromCustodyAndRetriesWhenItIsDown`,
+    `TestTheCheckerSaysWhatItDecided` (`internal/statement`);
+    `TestNoTokenIsSignedWithAStatementThatDoesNotVerify`,
+    `TestTheStatementIsCheckedForTheKeyItSigns` (`internal/signer`);
+    `TestAForgedStatementIsNeverUsedToSign`,
+    `TestAStatementThatDoesNotVerifyIsRefusedAndSaidSo` (`internal/api`);
+    `TestKeyryxModeNeedsTheRootPin`, `TestAMalformedRootPinRefusesToStart`,
+    `TestAKeyryxModeReadsItsRootPin`, `TestTheRootPinIsRefusedWithTheFileSigner`
+    (`internal/config`); the first of them red before the implementation.
+    Gate `scripts/statement-checked-before-use.sh` with four teeth cases; scenarios:
+    `features/signing.feature`)*
 
 ## Distribution
 

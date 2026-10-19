@@ -229,6 +229,27 @@ fault "base images: an unrelated label changes, digests untouched" \
   Dockerfile 'org.opencontainers.image.title="vouchryx"' 'org.opencontainers.image.title="vouchryx" ' \
   pass ./scripts/base-images-pinned-by-digest.sh
 
+# A delegated key is used only once its statement verifies against the pinned
+# root (invariant 28). The check must sit in current(), before the served-set test,
+# and a signer with no checker must refuse; a read of the key outside the signer
+# would skip both.
+fault "statement: current() stops asking the statement check" \
+  internal/signer/signer.go 'if err := d.verify(k, now); err != nil {' 'if err := error(nil); err != nil {' \
+  fail ./scripts/statement-checked-before-use.sh
+
+fault "statement: verify() accepts every key when no checker is configured" \
+  internal/signer/signer.go 'if d.statements == nil {' 'if d.statements == nil && false {' \
+  fail ./scripts/statement-checked-before-use.sh
+
+fault "statement: the API reads a delegated key outside the checked path" \
+  internal/api/api.go 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {' 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) { _, _ = s.Cfg.Keys().Current()' \
+  fail ./scripts/statement-checked-before-use.sh
+
+# And it must not fire on a comment that names the read.
+fault "statement: a comment naming the read, beside the jwks route" \
+  internal/api/api.go 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {' 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) { // the .Current() read is in internal/signer only' \
+  pass ./scripts/statement-checked-before-use.sh
+
 # --- every gate in scripts/ has a case here ---------------------------------
 #
 # This file is a hand-written list of cases, which is the shape that goes stale

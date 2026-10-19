@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/base64"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"github.com/TAIPANBOX/agent-stack-go/v2/keyclient"
 	"github.com/TAIPANBOX/vouchryx/internal/keyryxtest"
 	"github.com/TAIPANBOX/vouchryx/internal/signer"
+	"github.com/TAIPANBOX/vouchryx/internal/statement"
 )
 
 // VOUCHRYX_SIGNER=keyryx (CLAUDE.md invariant 27): every token this service
@@ -25,15 +28,25 @@ import (
 // fake custody (internal/keyryxtest), with the clock shared by every side.
 
 // newKeyryxStand is the usual stand with its signer replaced by the working key
-// a fake Keyryx certifies. overlap publishes the stand's file key beside it, as
-// the migration does. certify has the key certified at once, as a started
-// service would have it after its first renewal.
+// a fake Keyryx certifies, checked against the fake's own pinned root. overlap
+// publishes the stand's file key beside it, as the migration does. certify has
+// the key certified at once, as a started service would have it after its first
+// renewal.
 func newKeyryxStand(t *testing.T, overlap, certify bool) (*stand, *keyryxtest.Server, *keyclient.Delegated, *keyclient.JWKS) {
+	t.Helper()
+	return newKeyryxStandWith(t, overlap, certify, nil, nil)
+}
+
+// newKeyryxStandWith is newKeyryxStand with two ways to make Keyryx wrong. pin, when
+// set, gives the root the service pins in place of the fake's own. tamper, when set,
+// damages every statement the fake answers with.
+func newKeyryxStandWith(t *testing.T, overlap, certify bool, pin func(*keyryxtest.Server) string, tamper func([]byte) []byte) (*stand, *keyryxtest.Server, *keyclient.Delegated, *keyclient.JWKS) {
 	t.Helper()
 	s := newStand(t)
 	clock := func() time.Time { return s.now }
 	s.srv.Now = clock
 	fake := keyryxtest.New(t, signer.KeyName, "vouchryx", "canary-custody-bearer", clock)
+	fake.Tamper = tamper
 	tokenFile := filepath.Join(t.TempDir(), "keyryx.token")
 	if err := os.WriteFile(tokenFile, []byte(fake.Token), 0o600); err != nil {
 		t.Fatal(err)
@@ -64,8 +77,81 @@ func newKeyryxStand(t *testing.T, overlap, certify bool) (*stand, *keyryxtest.Se
 		k := delegation.FromPublic(&s.srv.Cfg.SigningKey.PublicKey, s.srv.Cfg.KeyID)
 		overlapKey = &k
 	}
-	s.srv.Signer = signer.NewDelegated(d, j, overlapKey, clock)
+	pinned := fake.Root.Pin()
+	if pin != nil {
+		pinned = pin(fake)
+	}
+	kp, err := statement.ParsePin(pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := statement.NewChecker(fake.URL, kp, signer.KeyName, "vouchryx", nil)
+	s.srv.Signer = signer.NewDelegated(d, j, overlapKey, clock, checker)
 	return s, fake, d, j
+}
+
+// flipMLDSA changes one bit of the ML-DSA-65 half of a statement: the half a
+// verifier that read only the classical one would never look at.
+func flipMLDSA(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var env struct {
+		Payload    string              `json:"payload"`
+		Signatures []map[string]string `json:"signatures"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(env.Signatures[1]["signature"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig[len(sig)/2] ^= 0x01
+	env.Signatures[1]["signature"] = base64.RawURLEncoding.EncodeToString(sig)
+	out, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// healthReason asks health, and returns its status and what the operator's log
+// says about it. The answer is one oracle-free code, so the reason is read where
+// the operator reads it: refuse writes it to the log (invariant 11).
+func healthReason(t *testing.T, s *stand) (int, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	w := get(s, "/healthz")
+	return w.Code, buf.String()
+}
+
+func TestAStatementThatDoesNotVerifyIsRefusedAndSaidSo(t *testing.T) {
+	// Keyryx certifies the key, and its statement is the one for the fake's root, but
+	// this service pins a different root. Nothing is signed, and health says why.
+	other := keyryxtest.NewRoot(t).Pin()
+	s, _, _, _ := newKeyryxStandWith(t, false, true, func(*keyryxtest.Server) string { return other }, nil)
+	rec, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-6"))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a token was issued on a statement that verifies under no pinned root: %d %s", rec.Code, rec.Body.String())
+	}
+	if code, logged := healthReason(t, s); code != http.StatusServiceUnavailable || !strings.Contains(logged, "signing_statement_not_verified") {
+		t.Fatalf("health answered %d and the log said %q, want 503 and signing_statement_not_verified", code, logged)
+	}
+}
+
+func TestAForgedStatementIsNeverUsedToSign(t *testing.T) {
+	// The claims of the statement are intact, so keyclient takes it, and only its ML-DSA
+	// half is damaged. The key must not sign.
+	s, _, _, _ := newKeyryxStandWith(t, false, true, nil, func(raw []byte) []byte { return flipMLDSA(t, raw) })
+	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-7"))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a token was signed by a key whose statement has a forged half: %d %v", rec.Code, body)
+	}
+	if code, logged := healthReason(t, s); code != http.StatusServiceUnavailable || !strings.Contains(logged, "signing_statement_not_verified") {
+		t.Fatalf("health answered %d and the log said %q, want 503 and signing_statement_not_verified", code, logged)
+	}
 }
 
 // currentKid is the kid of the working key valid now, as the signer sees it.

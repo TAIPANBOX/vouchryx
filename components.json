@@ -47,7 +47,8 @@
           "VOUCHRYX_KEYRYX_URL": { "required": false },
           "VOUCHRYX_KEYRYX_CONSUMER": { "required": false },
           "VOUCHRYX_KEYRYX_SOCKET": { "required": false },
-          "VOUCHRYX_KEYRYX_CREDENTIAL_FILE": { "required": false }
+          "VOUCHRYX_KEYRYX_CREDENTIAL_FILE": { "required": false },
+          "VOUCHRYX_KEYRYX_ROOT_PIN": { "required": false }
         },
         "missing_required_exit_code": 2
       },

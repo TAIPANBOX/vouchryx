@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-311-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-339-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -124,7 +124,7 @@ switch, different axis, and the second is the one an incident needs.
 | `GET /v1/revocations` | What enforcement points poll, with no credential. Carries `as_of`, so an empty list and an unreachable service are not the same answer. Each entry carries only what a verifier needs to refuse a token: `jti`, `subject`, `issued_before`, `expires`. It does **not** carry the `actor` or the `reason` of the revocation: those stay in the operator's record (the event stream and the `VOUCHRYX_REVOCATIONS_PATH` store), so the public list does not say who revoked a token or why. |
 | `GET /.well-known/jwks.json` | Public keys, so verification is offline. |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata: this service's own endpoints and grants. Names no trusted issuer and no configured client. |
-| `GET /healthz` | With no credential. `200` once the process is listening; in keyryx mode (`VOUCHRYX_SIGNER=keyryx`) `503` until a working key is certified, so it then reads as readiness (see NOT PROVEN). |
+| `GET /healthz` | With no credential. `200` once the process is listening; in keyryx mode (`VOUCHRYX_SIGNER=keyryx`) `503` until a working key is certified, and while its statement does not verify against the pinned root (the reason is in the log), so it then reads as readiness (see NOT PROVEN). |
 
 There is deliberately **no introspection endpoint**. It would put this service
 on the request path of every enforcement point at once.
@@ -206,6 +206,10 @@ VOUCHRYX_KEYRYX_CONSUMER  the consumer name Keyryx's policy grants the key to;
 VOUCHRYX_KEYRYX_SOCKET    the unix socket custody gave this consumer, or
 VOUCHRYX_KEYRYX_CREDENTIAL_FILE  its key or projected token file: exactly one of
                           the two with keyryx; any KEYRYX variable with file is refused
+VOUCHRYX_KEYRYX_ROOT_PIN  the delegation root's kids, one ES384 and one ML-DSA-65,
+                          comma separated; required with keyryx. The working key's
+                          statement must verify under them before the key signs
+                          (CLAUDE.md invariant 28); a malformed pin refuses the start
 VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path`, one per line; add `|unbound`
                           for an issuer whose subject tokens carry no key
                           (such a token is refused without the marker)
@@ -451,7 +455,9 @@ the `act` chain are `agent-stack-go/delegation`, pinned in `go.mod` (at a merged
 the owner's to tag). The JWS of a token this service issues is assembled by
 `internal/signer` (CLAUDE.md invariant 27), which signs with the file key, or,
 with `VOUCHRYX_SIGNER=keyryx`, with the working key held by `keyclient` and
-certified by Keyryx. `delegation.SignES256` is no longer called. This
+certified by Keyryx. Keyryx's statement for that key is verified against the
+delegation root this service pins, in `internal/statement`, before the key is
+used (invariant 28). `delegation.SignES256` is no longer called. This
 service imports the library, and today it is the only Go service that does: measured
 2026-09-16 over every Go repository in the stack, `wardryx`, `idryx`,
 `scopyx`, `heraldyx` and `mockryx` import nothing from that package. What this
@@ -515,8 +521,15 @@ line, both written every time.
 
 ## Testing
 
-255 tests. Tier T3: these are authorization decisions where a wrong answer is
+283 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
+
+**The statement check (invariant 28) was planted with 21 faults, one at a time:
+19 were caught by a named test.** The two that survive each remove one of two
+comparisons of the key a statement certifies, its kid and its point, and each is
+redundant alone: the claims already make the kid the thumbprint of the point, so
+a mismatch in one is a mismatch in the other. Removed together they are caught
+(`TestAStatementCertifyingAnotherKeyIsRefusedAtUse`).
 
 **Ten mutants were planted in the security paths while that code lived here;
 nine were caught immediately and one survived.** Closing it is
@@ -600,9 +613,28 @@ Stated here rather than left to be discovered.
   that is every 36 hours. The wave-2 decision names a daily renewal; keyclient
   renews at half the statement's life, and a 48-hour statement would give a
   daily cadence. Not changed here.
-- **The statement's root signatures are not checked here.** keyclient checks the
-  statement's claims against what it asked for and trusts the channel to custody
-  (its own NOT PROVEN). A socket or a bearer credential is the channel.
+- **The root's keys come over the channel and are bound by kid, not trusted as
+  read.** `internal/statement` verifies both halves of Keyryx's statement under
+  the root keys named in `VOUCHRYX_KEYRYX_ROOT_PIN`. Those keys are read once from
+  custody at `/v1/jwks/keyryx.delegation-root`; a key is accepted only if its kid
+  is the thumbprint of that key and the kid is pinned. The pin is the trust root,
+  and the channel carries only bytes that the pin then checks. Rotating the root
+  is a new pin and a restart. Until the owner rules on where the root comes from,
+  this is this repository's reading (CLAUDE.md invariant 28).
+- **The served key set is not filtered by statement.** Verifiers read the set
+  this service serves: Keyryx's published set, and in the overlap the file key's
+  public half. Only the working key's own statement is checked. A party on the
+  channel that puts its own public key into that set is not caught here. Checking
+  each served kid against `GET /v1/statements/{kid}` is the larger half of the
+  wave-2 verification design and is not built.
+- **The statement format is a copy of keyryx's, tested against this repository's
+  fake custody.** `internal/statement` follows keyryx's `internal/statement` at
+  origin/main 43bb8c4. The tests sign with `internal/keyryxtest`, which follows the
+  same format. Whether the real keyryx binary's statements verify here is a
+  separate measurement, not made by the test suite.
+- **A statement that verifies is not a statement that is current.** A revoked
+  working key is not learned from the statement; it is learned from Keyryx's
+  published set, which is what the served-set item above leaves unchecked.
 - **A failed certification is retried on keyclient's fixed five-minute wait.** A
   Keyryx that comes back is used within that wait; the service issues nothing
   until then.
