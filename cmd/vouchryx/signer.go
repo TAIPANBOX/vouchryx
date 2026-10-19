@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/TAIPANBOX/agent-stack-go/delegation"
 	"github.com/TAIPANBOX/agent-stack-go/keyclient"
 	"github.com/TAIPANBOX/vouchryx/internal/config"
 	"github.com/TAIPANBOX/vouchryx/internal/signer"
+	"github.com/TAIPANBOX/vouchryx/internal/statement"
 )
 
 // buildSigner returns the signer this process signs with. In file mode it is the
@@ -47,5 +49,10 @@ func buildSigner(cfg config.Config) (signer.Signer, error) {
 	})
 	log.Printf("vouchryx: signing with a working key Keyryx certifies (key %s, consumer %s, %s); no token is issued until the first certification",
 		signer.KeyName, cfg.Keyryx.Consumer, cfg.Keyryx.BaseURL)
-	return signer.NewDelegated(d, j, overlap, time.Now), nil
+	// Said at start, so an operator reads which root the statement is checked under
+	// (invariant 28). The key is used only once its statement verifies against it.
+	log.Printf("vouchryx: the working key's statement is checked against the delegation root pinned to %s, and the key is not used until it verifies",
+		strings.Join(cfg.Keyryx.RootPin, ", "))
+	checker := statement.NewChecker(cfg.Keyryx.BaseURL, cfg.Keyryx.RootPin, signer.KeyName, cfg.Keyryx.Consumer, log.Printf)
+	return signer.NewDelegated(d, j, overlap, time.Now, checker), nil
 }

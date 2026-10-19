@@ -20,6 +20,7 @@ import (
 
 	"github.com/TAIPANBOX/agent-stack-go/delegation"
 	"github.com/TAIPANBOX/agent-stack-go/keyclient"
+	"github.com/TAIPANBOX/vouchryx/internal/statement"
 )
 
 // KeyName is the name this service's delegated key has at Keyryx, and the name
@@ -38,6 +39,18 @@ const PollEvery = 10 * time.Second
 // ErrNotCertified means this signer holds no key it may sign with right now:
 // none has been certified, or the last one has run out. Signing fails closed.
 var ErrNotCertified = errors.New("signer: no certified signing key is valid now")
+
+// ErrUnverified means the key Keyryx certified has a statement that does not
+// verify against the pinned delegation root, so the key is not used (CLAUDE.md
+// invariant 28). It is a kind of ErrNotCertified: the same refusal, said more exactly.
+var ErrUnverified = fmt.Errorf("%w: the working key is not certified by a statement that verifies", ErrNotCertified)
+
+// Statements checks the statement a working key arrives with against the pinned
+// delegation root, for the key the signer is about to use (invariant 28). It is
+// satisfied by *statement.Checker.
+type Statements interface {
+	Check(raw []byte, want statement.Want, now time.Time) error
+}
 
 // Signer signs with the key it holds at the moment it is asked.
 type Signer interface {
@@ -126,19 +139,20 @@ type jwksSource interface {
 // the file key's public half, published for verification during the migration
 // and never used to sign.
 type Delegated struct {
-	keys    keySource
-	jwks    jwksSource
-	overlap *delegation.JWK
-	now     func() time.Time
+	keys       keySource
+	jwks       jwksSource
+	overlap    *delegation.JWK
+	now        func() time.Time
+	statements Statements
 }
 
 // NewDelegated binds the delegated key and the cached set of its name.
-func NewDelegated(d *keyclient.Delegated, j *keyclient.JWKS, overlap *delegation.JWK, now func() time.Time) *Delegated {
-	return newDelegated(d, j, overlap, now)
+func NewDelegated(d *keyclient.Delegated, j *keyclient.JWKS, overlap *delegation.JWK, now func() time.Time, st Statements) *Delegated {
+	return newDelegated(d, j, overlap, now, st)
 }
 
-func newDelegated(keys keySource, jwks jwksSource, overlap *delegation.JWK, now func() time.Time) *Delegated {
-	return &Delegated{keys: keys, jwks: jwks, overlap: overlap, now: now}
+func newDelegated(keys keySource, jwks jwksSource, overlap *delegation.JWK, now func() time.Time, st Statements) *Delegated {
+	return &Delegated{keys: keys, jwks: jwks, overlap: overlap, now: now, statements: st}
 }
 
 // Sign signs with the working key valid now. It reads the key, checks its
@@ -176,12 +190,32 @@ func (d *Delegated) current() (keyclient.Key, error) {
 	if now.Before(k.NotBefore) || !now.Before(k.NotAfter) {
 		return keyclient.Key{}, fmt.Errorf("%w: the key's statement is not valid at %s", ErrNotCertified, now.UTC().Format(time.RFC3339))
 	}
+	// The statement is checked before the key is used (invariant 28): a key Keyryx
+	// certified and a statement that does not verify under the pinned root is not a key.
+	if err := d.verify(k, now); err != nil {
+		return keyclient.Key{}, err
+	}
 	// A key is used only once the set this service serves holds it: until then no
 	// verifier can check a token made with it. Published before it signs.
 	if !hasKid(d.jwks.Set().Keys, k.Kid) {
 		return keyclient.Key{}, fmt.Errorf("%w: the key is certified but not yet in the served set", ErrNotCertified)
 	}
 	return k, nil
+}
+
+// verify checks the statement of k for k itself: its kid, its point, its name,
+// its owner and its window, under the pinned root. A refusal is ErrUnverified. With
+// no checker configured every key is unverified, so nothing is signed on a key
+// nobody checked.
+func (d *Delegated) verify(k keyclient.Key, now time.Time) error {
+	if d.statements == nil {
+		return fmt.Errorf("%w: no statement checker is configured", ErrUnverified)
+	}
+	want := statement.Want{Kid: k.Kid, X: k.JWK.X, Y: k.JWK.Y, NotBefore: k.NotBefore.Unix(), NotAfter: k.NotAfter.Unix()}
+	if err := d.statements.Check(k.Statement, want, now); err != nil {
+		return fmt.Errorf("%w: %v", ErrUnverified, err)
+	}
+	return nil
 }
 
 // Public is the cached set Keyryx published for this name, and the file key's

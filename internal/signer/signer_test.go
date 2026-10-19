@@ -16,6 +16,7 @@ import (
 	"github.com/TAIPANBOX/agent-stack-go/delegation"
 	"github.com/TAIPANBOX/agent-stack-go/keyclient"
 	"github.com/TAIPANBOX/vouchryx/internal/keyryxtest"
+	"github.com/TAIPANBOX/vouchryx/internal/statement"
 )
 
 // base is the clock these tests use. Nothing in this file reads the wall clock
@@ -113,6 +114,22 @@ func (f fakeJWKS) Set() delegation.Set { return f.set }
 
 func clockAt(t time.Time) func() time.Time { return func() time.Time { return t } }
 
+// fakeStatements stands in for the statement checker. A nil err accepts every
+// statement, which is what the tests that are not about verification need; the
+// ones that are about it set err, and read back the key each check was asked about.
+type fakeStatements struct {
+	err     error
+	checked []statement.Want
+}
+
+func (f *fakeStatements) Check(raw []byte, want statement.Want, now time.Time) error {
+	f.checked = append(f.checked, want)
+	return f.err
+}
+
+// accept is a checker that accepts every statement.
+func accept() *fakeStatements { return &fakeStatements{} }
+
 // --- the file key and the token shape ---------------------------------------
 
 func TestAFileKeysTokenVerifiesAgainstItsOwnKeySet(t *testing.T) {
@@ -169,7 +186,7 @@ func TestAWorkingKeyTokenNamesTheKeyItWasSignedWith(t *testing.T) {
 	e := newEntry(t, base, base.Add(72*time.Hour))
 	served := fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{e.keyFor().JWK}}}
 	fk := &fakeKeys{cur: e}
-	d := newDelegated(fk, served, nil, clockAt(base))
+	d := newDelegated(fk, served, nil, clockAt(base), accept())
 	tok, err := JWS(d, "at+jwt", map[string]any{"sub": "agent://acme/triage"})
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +207,7 @@ func TestAnExpiredStatementIsNeverUsedToSign(t *testing.T) {
 	fk := &fakeKeys{cur: e}
 	// Served, so that the window is the only thing that can refuse it here.
 	served := fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{e.keyFor().JWK}}}
-	d := newDelegated(fk, served, nil, clockAt(base))
+	d := newDelegated(fk, served, nil, clockAt(base), accept())
 	_, _, err := d.Sign(func(string) []byte { return []byte("x") })
 	if !errors.Is(err, ErrNotCertified) {
 		t.Fatalf("a statement that ran out was used to sign: err %v", err)
@@ -206,7 +223,7 @@ func TestTheFileKeyIsNeverUsedWhenNoStatementIsValid(t *testing.T) {
 	fileKey := newEntry(t, base, base.Add(time.Hour))
 	ov := delegation.FromPublic(&fileKey.key.PublicKey, fileKey.kid)
 	fk := &fakeKeys{err: keyclient.ErrNoValidKey}
-	d := newDelegated(fk, fakeJWKS{}, &ov, clockAt(base))
+	d := newDelegated(fk, fakeJWKS{}, &ov, clockAt(base), accept())
 	kid, sig, err := d.Sign(func(string) []byte { return []byte("x") })
 	if !errors.Is(err, ErrNotCertified) {
 		t.Fatalf("with no certified key the signer answered %v, want ErrNotCertified", err)
@@ -222,7 +239,7 @@ func TestTheSignedKidIsTheKidTheHeaderNames(t *testing.T) {
 	// retries rather than pairing one kid with another key's signature.
 	rk := &raceKeys{first: newEntry(t, base.Add(-time.Hour), base.Add(time.Hour)), second: newEntry(t, base, base.Add(time.Hour))}
 	both := fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{rk.first.keyFor().JWK, rk.second.keyFor().JWK}}}
-	d := newDelegated(rk, both, nil, clockAt(base))
+	d := newDelegated(rk, both, nil, clockAt(base), accept())
 	var built string
 	kid, _, err := d.Sign(func(k string) []byte {
 		built = k
@@ -246,7 +263,7 @@ func TestThePublishedSetIsKeyryxsSetAndTheOverlapKeyOnce(t *testing.T) {
 	file := newEntry(t, base, base.Add(time.Hour))
 	ov := delegation.FromPublic(&file.key.PublicKey, file.kid)
 
-	d := newDelegated(&fakeKeys{cur: fresh}, fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{fresh.keyFor().JWK}}}, &ov, clockAt(base))
+	d := newDelegated(&fakeKeys{cur: fresh}, fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{fresh.keyFor().JWK}}}, &ov, clockAt(base), accept())
 	got := d.Public().Keys
 	if len(got) != 2 {
 		t.Fatalf("the served set holds %d key(s), want Keyryx's key and the overlap key: %v", len(got), kids(got))
@@ -257,7 +274,7 @@ func TestThePublishedSetIsKeyryxsSetAndTheOverlapKeyOnce(t *testing.T) {
 
 	// The same key in both places is published once.
 	same := delegation.FromPublic(&fresh.key.PublicKey, fresh.kid)
-	d = newDelegated(&fakeKeys{cur: fresh}, fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{fresh.keyFor().JWK}}}, &same, clockAt(base))
+	d = newDelegated(&fakeKeys{cur: fresh}, fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{fresh.keyFor().JWK}}}, &same, clockAt(base), accept())
 	if n := len(d.Public().Keys); n != 1 {
 		t.Fatalf("a key present twice is served %d times", n)
 	}
@@ -291,7 +308,7 @@ func TestAKeyIsNotUsedUntilItIsInTheServedSet(t *testing.T) {
 	e := newEntry(t, base, base.Add(72*time.Hour))
 	fk := &fakeKeys{cur: e}
 	jw := &fakeJWKS{}
-	d := newDelegated(fk, jw, nil, clockAt(base))
+	d := newDelegated(fk, jw, nil, clockAt(base), accept())
 	if err := d.Ready(); !errors.Is(err, ErrNotCertified) {
 		t.Fatalf("a key that is not in the served set is reported ready: %v", err)
 	}
@@ -335,7 +352,12 @@ func TestTheWorkingKeyIsCertifiedAtStart(t *testing.T) {
 	defer cancel()
 	StartDelegated(ctx, d, j, func(err error) { t.Logf("signer: %v", err) })
 
-	sg := NewDelegated(d, j, nil, time.Now)
+	pin, err := statement.ParsePin(fake.Root.Pin())
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := statement.NewChecker(fake.URL, pin, KeyName, "vouchryx", nil)
+	sg := NewDelegated(d, j, nil, time.Now, checker)
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if sg.Ready() == nil {
@@ -344,4 +366,63 @@ func TestTheWorkingKeyIsCertifiedAtStart(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("the working key was not certified and served within thirty seconds of start: %v", sg.Ready())
+}
+
+// --- the statement -----------------------------------------------------------
+
+func TestNoTokenIsSignedWithAStatementThatDoesNotVerify(t *testing.T) {
+	// The key is certified and in the served set, but its statement does not verify
+	// under the pinned root. The library is never asked to sign, and the answer is a
+	// refusal that says why, on the signer and on health alike.
+	e := newEntry(t, base, base.Add(72*time.Hour))
+	served := fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{e.keyFor().JWK}}}
+	fk := &fakeKeys{cur: e}
+	st := &fakeStatements{err: errors.New("the ML-DSA-65 half does not verify")}
+	d := newDelegated(fk, served, nil, clockAt(base), st)
+	if _, _, err := d.Sign(func(string) []byte { return []byte("x") }); !errors.Is(err, ErrUnverified) || !errors.Is(err, ErrNotCertified) {
+		t.Fatalf("a statement that does not verify signed, or was refused without saying so: err %v", err)
+	}
+	if fk.signs != 0 {
+		t.Fatalf("the library signed %d time(s) with a key whose statement does not verify", fk.signs)
+	}
+	if err := d.Ready(); !errors.Is(err, ErrUnverified) {
+		t.Fatalf("health is not told the statement does not verify: %v", err)
+	}
+}
+
+func TestTheStatementIsCheckedForTheKeyItSigns(t *testing.T) {
+	// Each statement is checked for the key the library is about to sign with: its
+	// kid, its public point and its window, not a key the signer held earlier.
+	e := newEntry(t, base, base.Add(72*time.Hour))
+	served := fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{e.keyFor().JWK}}}
+	st := accept()
+	d := newDelegated(&fakeKeys{cur: e}, served, nil, clockAt(base), st)
+	if _, _, err := d.Sign(func(string) []byte { return []byte("x") }); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.checked) == 0 {
+		t.Fatal("the statement of the key was never checked before it signed")
+	}
+	got := st.checked[len(st.checked)-1]
+	if got.Kid != e.kid || got.X != e.keyFor().JWK.X || got.Y != e.keyFor().JWK.Y {
+		t.Fatalf("the statement was checked for %+v, want the key the library signed with, %s", got, e.kid)
+	}
+	if got.NotBefore != base.Unix() || got.NotAfter != base.Add(72*time.Hour).Unix() {
+		t.Fatalf("the statement was checked for the window %d to %d, want the key's own", got.NotBefore, got.NotAfter)
+	}
+}
+
+func TestWithNoStatementCheckerNothingIsSigned(t *testing.T) {
+	// A signer built without a checker has checked no statement, so it treats every
+	// key as unverified: nothing is signed on a key nobody checked.
+	e := newEntry(t, base, base.Add(72*time.Hour))
+	served := fakeJWKS{set: delegation.Set{Keys: []delegation.JWK{e.keyFor().JWK}}}
+	fk := &fakeKeys{cur: e}
+	d := newDelegated(fk, served, nil, clockAt(base), nil)
+	if _, _, err := d.Sign(func(string) []byte { return []byte("x") }); !errors.Is(err, ErrUnverified) {
+		t.Fatalf("a signer with no checker signed, or refused without saying so: err %v", err)
+	}
+	if fk.signs != 0 {
+		t.Fatalf("the library signed %d time(s) with no statement checked", fk.signs)
+	}
 }

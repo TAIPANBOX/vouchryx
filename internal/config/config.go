@@ -22,6 +22,7 @@ import (
 
 	"github.com/TAIPANBOX/agent-stack-go/delegation"
 	"github.com/TAIPANBOX/vouchryx/internal/agents"
+	"github.com/TAIPANBOX/vouchryx/internal/statement"
 	"github.com/TAIPANBOX/vouchryx/internal/xaa"
 )
 
@@ -125,13 +126,16 @@ type KeyryxConfig struct {
 	// BearerFile holds the consumer's key or projected token,
 	// VOUCHRYX_KEYRYX_CREDENTIAL_FILE.
 	BearerFile string
+	// RootPin is the delegation root's kids the working key's statement must
+	// verify under, VOUCHRYX_KEYRYX_ROOT_PIN (CLAUDE.md invariant 28).
+	RootPin statement.Pin
 }
 
 // signerFromEnv reads VOUCHRYX_SIGNER and, for keyryx, the variables that say how
 // to reach Keyryx. A Keyryx variable with any other signer is refused by name, so
 // a line an operator wrote is never silently ignored.
 func signerFromEnv() (string, *KeyryxConfig, error) {
-	keyryxVars := []string{"VOUCHRYX_KEYRYX_URL", "VOUCHRYX_KEYRYX_CONSUMER", "VOUCHRYX_KEYRYX_SOCKET", "VOUCHRYX_KEYRYX_CREDENTIAL_FILE"}
+	keyryxVars := []string{"VOUCHRYX_KEYRYX_URL", "VOUCHRYX_KEYRYX_CONSUMER", "VOUCHRYX_KEYRYX_SOCKET", "VOUCHRYX_KEYRYX_CREDENTIAL_FILE", "VOUCHRYX_KEYRYX_ROOT_PIN"}
 	switch os.Getenv("VOUCHRYX_SIGNER") {
 	case "", "file":
 		for _, v := range keyryxVars {
@@ -156,6 +160,18 @@ func signerFromEnv() (string, *KeyryxConfig, error) {
 		if (k.Socket == "") == (k.BearerFile == "") {
 			return "", nil, errors.New("VOUCHRYX_SIGNER=keyryx needs exactly one of VOUCHRYX_KEYRYX_SOCKET and VOUCHRYX_KEYRYX_CREDENTIAL_FILE")
 		}
+		// The pin is what the working key's statement is checked against. Without
+		// one this service has no root to check it under, and would sign on Keyryx's
+		// word alone, so it is required, and a malformed one refuses the start.
+		raw := os.Getenv("VOUCHRYX_KEYRYX_ROOT_PIN")
+		if raw == "" {
+			return "", nil, errors.New("VOUCHRYX_KEYRYX_ROOT_PIN is required when VOUCHRYX_SIGNER=keyryx: the kids of the delegation root, so the working key's statement can be checked against it")
+		}
+		pin, err := statement.ParsePin(raw)
+		if err != nil {
+			return "", nil, fmt.Errorf("VOUCHRYX_KEYRYX_ROOT_PIN: %w", err)
+		}
+		k.RootPin = pin
 		return "keyryx", k, nil
 	default:
 		return "", nil, fmt.Errorf("VOUCHRYX_SIGNER is %q; it takes file (the default) or keyryx", os.Getenv("VOUCHRYX_SIGNER"))
