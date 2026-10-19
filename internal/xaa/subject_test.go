@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TAIPANBOX/agent-stack-go/chain"
+	"github.com/TAIPANBOX/agent-stack-go/v2/chain"
 )
 
 func TestMapSubjectEmbedsASafeSubRaw(t *testing.T) {

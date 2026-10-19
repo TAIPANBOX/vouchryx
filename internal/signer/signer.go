@@ -18,8 +18,8 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/TAIPANBOX/agent-stack-go/delegation"
-	"github.com/TAIPANBOX/agent-stack-go/keyclient"
+	"github.com/TAIPANBOX/agent-stack-go/v2/delegation"
+	"github.com/TAIPANBOX/agent-stack-go/v2/keyclient"
 )
 
 // KeyName is the name this service's delegated key has at Keyryx, and the name

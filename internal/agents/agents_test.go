@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TAIPANBOX/agent-stack-go/delegation"
+	"github.com/TAIPANBOX/agent-stack-go/v2/delegation"
 )
 
 // Every test here is about WHO gets an agent credential, which is a question

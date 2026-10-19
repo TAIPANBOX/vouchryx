@@ -48,7 +48,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TAIPANBOX/agent-stack-go/delegation"
+	"github.com/TAIPANBOX/agent-stack-go/v2/delegation"
 )
 
 // AuthSource values, the `auth_src` claim on an agent token: how the agent
