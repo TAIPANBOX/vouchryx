@@ -34,7 +34,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TAIPANBOX/agent-stack-go/delegation"
+	"github.com/TAIPANBOX/agent-stack-go/v2/delegation"
 )
 
 // Typ is every half's protected typ.

@@ -47,7 +47,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TAIPANBOX/agent-stack-go/delegation"
+	"github.com/TAIPANBOX/agent-stack-go/v2/delegation"
 )
 
 // GrantType is RFC 8693's, repeated here so the client does not import the

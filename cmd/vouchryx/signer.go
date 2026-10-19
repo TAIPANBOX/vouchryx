@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TAIPANBOX/agent-stack-go/delegation"
-	"github.com/TAIPANBOX/agent-stack-go/keyclient"
+	"github.com/TAIPANBOX/agent-stack-go/v2/delegation"
+	"github.com/TAIPANBOX/agent-stack-go/v2/keyclient"
 	"github.com/TAIPANBOX/vouchryx/internal/config"
 	"github.com/TAIPANBOX/vouchryx/internal/signer"
 	"github.com/TAIPANBOX/vouchryx/internal/statement"

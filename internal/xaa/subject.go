@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/TAIPANBOX/agent-stack-go/chain"
+	"github.com/TAIPANBOX/agent-stack-go/v2/chain"
 )
 
 // safeUserPath is the character class vouchryx already uses for an agent://
@@ -40,7 +40,7 @@ var safeUserPath = regexp.MustCompile(`^[a-z0-9._/-]+$`)
 // Neither argument depends on what the bytes happen to be.
 //
 // The result is checked against agent-stack-go's own chain validation
-// (github.com/TAIPANBOX/agent-stack-go/chain, the same grammar
+// (github.com/TAIPANBOX/agent-stack-go/v2/chain, the same grammar
 // delegation.Chain applies to every chain this service builds) before it is
 // returned, so a future tightening of that grammar is caught here rather
 // than surfacing later as a token this service issued and its own record
