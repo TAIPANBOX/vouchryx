@@ -16,6 +16,7 @@
 //	VOUCHRYX_KEYRYX_CONSUMER  the consumer name Keyryx's policy grants the key to, required with keyryx
 //	VOUCHRYX_KEYRYX_SOCKET    the unix socket custody gave this consumer, or
 //	VOUCHRYX_KEYRYX_CREDENTIAL_FILE  its key or projected token file: exactly one of the two with keyryx
+//	VOUCHRYX_KEYRYX_ROOT_PIN  the delegation root's kids (ES384 and ML-DSA-65), required with keyryx
 //	VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path[|unbound]` per line; optional once VOUCHRYX_AGENTS enrols an agent
 //	VOUCHRYX_TTL_SECONDS      default 300, capped at one hour
 //	VOUCHRYX_EVENTS_PATH      agent-event NDJSON, optional

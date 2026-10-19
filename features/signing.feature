@@ -52,3 +52,51 @@ Feature: A token is signed by the key Keyryx certified, or by nothing
     Given no signer is configured, and a key file is
     When a caller is issued a token
     Then the file key signs it, and the key set and health answer as they always have
+
+  # @test:TestAStatementCertifiedByThePinnedRootVerifies
+  Scenario: A statement that both halves of the pinned root signed verifies
+    Given Keyryx's statement for the working key, signed by both halves of the root this service pins
+    When this service checks the statement
+    Then it verifies, and the name and the key it certifies are the ones this service asked for
+
+  # @test:TestAStatementWithAForgedMLDSAHalfIsRefused
+  Scenario: A statement whose post-quantum half does not verify is refused
+    Given a statement whose ML-DSA-65 half does not verify, while its ES384 half does
+    When this service checks the statement
+    Then it is refused, because the classical half alone is not the root's word
+
+  # @test:TestAStatementSignedByAnUnpinnedRootIsRefused
+  Scenario: A statement from a root this service does not pin is refused
+    Given a statement signed by a root key that is served beside the pinned one but is not pinned
+    When this service checks the statement
+    Then it is refused
+
+  # @test:TestAStatementCertifyingAnotherKeyIsRefusedAtUse
+  Scenario: A statement for another key is never used for the key this service generated
+    Given a verified statement that certifies a different key from the one this service holds
+    When this service checks it against its working key
+    Then it is refused, and the working key is not used
+
+  # @test:TestAStatementOutsideItsWindowIsRefusedAtUse
+  Scenario: A statement past its window is refused
+    Given a verified statement whose window has run out
+    When this service checks it
+    Then it is refused
+
+  # @test:TestNoTokenIsSignedWithAStatementThatDoesNotVerify
+  Scenario: A key whose statement does not verify signs nothing, and health says so
+    Given Keyryx has certified the working key, and its statement does not verify under the pinned root
+    When a caller asks for a token, or health is asked
+    Then no token is signed, health answers unavailable, and the log says the statement does not verify
+
+  # @test:TestAForgedStatementIsNeverUsedToSign
+  Scenario: A statement with a forged half is never used to sign a token
+    Given Keyryx answers with a statement whose ML-DSA-65 half is forged
+    When a caller asks for a token
+    Then the answer is a refusal, and no token is signed
+
+  # @test:TestKeyryxModeNeedsTheRootPin
+  Scenario: Keyryx mode refuses to start without the root it trusts
+    Given VOUCHRYX_SIGNER is keyryx and no delegation root is pinned
+    When the service starts
+    Then it refuses to start, and names the variable that pins the root

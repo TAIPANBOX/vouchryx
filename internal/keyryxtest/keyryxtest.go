@@ -1,14 +1,14 @@
 // Package keyryxtest is a stand-in for Keyryx's consumer API, for vouchryx's
-// tests. It answers the three routes keyclient calls (challenge, delegate and
-// the key set), in the shapes keyryx's internal/api and internal/statement
-// define at origin/main 43bb8c4, and it checks a proof of possession the way
-// keyryx does: the domain-separated, NUL-delimited input, over the key's own
-// digest.
+// tests. It answers the routes keyclient calls (challenge, delegate and the
+// key set), and the delegation root's key set, in the shapes keyryx's
+// internal/api and internal/statement define at origin/main 43bb8c4. It signs
+// statements the way keyryx does: both halves of a hybrid root, ES384 and
+// ML-DSA-65, each over its own protected header and the payload.
 //
-// It is not Keyryx. It has no policy file, no use log, no root key on disk and
-// no hybrid root: a statement is signed by one throwaway ES256 root that
-// keyclient does not verify either. The real binary is run by hand, not here
-// (see the vouchryx V3 report's NOT PROVEN list).
+// It is not Keyryx. It has no policy file, no use log and no root key on disk,
+// and it checks a proof of possession the way keyryx does: the
+// domain-separated, NUL-delimited input, over the key's own digest. The real
+// binary is run by hand, not here (see the vouchryx V3 report's NOT PROVEN).
 package keyryxtest
 
 import (
@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"crypto/mldsa"
 	"github.com/TAIPANBOX/agent-stack-go/delegation"
 )
 
@@ -37,6 +38,104 @@ const (
 	maxLifetime = 7 * 24 * time.Hour
 	minLifetime = 10 * time.Minute
 )
+
+// RootName is the delegation root's name in custody. Its key set is served at
+// /v1/jwks/keyryx.delegation-root and holds the two halves of the root.
+const RootName = "keyryx.delegation-root"
+
+// Typ is every statement half's protected typ.
+const Typ = "keyryx-statement+jwt"
+
+// Root is a throwaway delegation root with both halves keyryx signs statements
+// with: an ES384 key and an ML-DSA-65 key. Its kids are the RFC 7638 thumbprint
+// of the ES384 key and "mldsa65:" plus the SHA-256 of the ML-DSA-65 public key,
+// as keyryx names them.
+type Root struct {
+	es    *ecdsa.PrivateKey
+	ml    *mldsa.PrivateKey
+	ESKid string
+	MLKid string
+}
+
+// NewRoot makes a root with fresh keys.
+func NewRoot(t *testing.T) *Root {
+	t.Helper()
+	es, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ml, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		t.Fatal(err)
+	}
+	esKid, err := delegation.Thumbprint(delegation.FromPublic(&es.PublicKey, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(ml.PublicKey().Bytes())
+	return &Root{es: es, ml: ml, ESKid: esKid, MLKid: "mldsa65:" + base64.RawURLEncoding.EncodeToString(sum[:])}
+}
+
+// Pin is the root's two kids in the form an operator configures: the ES384
+// kid, then the ML-DSA-65 kid.
+func (r *Root) Pin() string { return r.ESKid + "," + r.MLKid }
+
+// KeySet is the root's key set as custody serves it: the EC key of the ES384
+// half and the ML-DSA-65 key in the AKP form, each with its kid, alg and use.
+func (r *Root) KeySet() ([]byte, error) {
+	ec := delegation.FromPublic(&r.es.PublicKey, r.ESKid)
+	return json.Marshal(map[string]any{"keys": []any{
+		map[string]any{"kty": "EC", "crv": ec.Crv, "x": ec.X, "y": ec.Y, "kid": r.ESKid, "alg": "ES384", "use": "sig"},
+		map[string]any{"kty": "AKP", "alg": "ML-DSA-65", "pub": base64.RawURLEncoding.EncodeToString(r.ml.PublicKey().Bytes()), "kid": r.MLKid, "use": "sig"},
+	}})
+}
+
+// Statement signs claims the way keyryx does: the roots claim names both
+// halves, and each half signs ASCII(protected "." payload). It returns the
+// statement as custody serves it, the JWS in General JSON form.
+func (r *Root) Statement(claims map[string]any) ([]byte, error) {
+	return r.StatementWithRoots(claims, nil)
+}
+
+// StatementWithRoots is Statement with the roots claim given: a statement whose
+// payload names kids other than the halves that sign it, which keyryx would
+// never issue and a verifier must refuse. nil names the root's own kids.
+func (r *Root) StatementWithRoots(claims map[string]any, roots map[string]string) ([]byte, error) {
+	if roots == nil {
+		roots = map[string]string{"ES384": r.ESKid, "ML-DSA-65": r.MLKid}
+	}
+	claims["roots"] = roots
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return nil, err
+	}
+	p := base64.RawURLEncoding.EncodeToString(payload)
+	var sigs []map[string]string
+	for _, half := range []struct{ alg, kid string }{{"ES384", r.ESKid}, {"ML-DSA-65", r.MLKid}} {
+		h, err := json.Marshal(map[string]string{"alg": half.alg, "kid": half.kid, "typ": Typ})
+		if err != nil {
+			return nil, err
+		}
+		protected := base64.RawURLEncoding.EncodeToString(h)
+		input := []byte(protected + "." + p)
+		var sig []byte
+		if half.alg == "ES384" {
+			d := sha512.Sum384(input)
+			rr, ss, err := ecdsa.Sign(rand.Reader, r.es, d[:])
+			if err != nil {
+				return nil, err
+			}
+			sig = append(pad(rr, 48), pad(ss, 48)...)
+		} else {
+			sig, err = r.ml.Sign(rand.Reader, input, &mldsa.Options{})
+			if err != nil {
+				return nil, err
+			}
+		}
+		sigs = append(sigs, map[string]string{"protected": protected, "signature": base64.RawURLEncoding.EncodeToString(sig)})
+	}
+	return json.Marshal(map[string]any{"payload": p, "signatures": sigs})
+}
 
 // certified is one key this server certified.
 type certified struct {
@@ -54,9 +153,13 @@ type Server struct {
 	Name     string
 	Consumer string
 	Token    string
+	// Root signs every statement this server answers with.
+	Root *Root
+	// Tamper, when set, changes the statement bytes before they are answered:
+	// a custody that serves a damaged statement, for the verifier to refuse.
+	Tamper func([]byte) []byte
 
-	now  func() time.Time
-	root *ecdsa.PrivateKey
+	now func() time.Time
 
 	mu          sync.Mutex
 	challenges  map[string]time.Time
@@ -70,11 +173,7 @@ type Server struct {
 // answering a bearer credential of token. now is the clock both sides share.
 func New(t *testing.T, name, consumer, token string, now func() time.Time) *Server {
 	t.Helper()
-	root, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := &Server{Name: name, Consumer: consumer, Token: token, now: now, root: root,
+	s := &Server{Name: name, Consumer: consumer, Token: token, now: now, Root: NewRoot(t),
 		challenges: map[string]time.Time{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/keys/{name}/challenge", s.challenge)
@@ -247,32 +346,23 @@ func (s *Server) delegate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload, err := json.Marshal(map[string]any{
+	jti, err := randomID()
+	if err != nil {
+		http.Error(w, "entropy", http.StatusInternalServerError)
+		return
+	}
+	statement, err := s.Root.Statement(map[string]any{
 		"v": 1, "iss": "keyryx", "name": s.Name, "owner": s.Consumer,
 		"kid": req.JWK.Kid, "jwk": req.JWK,
 		"not_before": now.Unix(), "not_after": now.Add(life).Unix(),
+		"issued_at": now.Unix(), "jti": jti,
 	})
 	if err != nil {
 		http.Error(w, "registry_failed", http.StatusInternalServerError)
 		return
 	}
-	payloadB64 := base64.RawURLEncoding.EncodeToString(payload)
-	sum := sha256.Sum256([]byte(payloadB64))
-	rr, ss, err := ecdsa.Sign(rand.Reader, s.root, sum[:])
-	if err != nil {
-		http.Error(w, "registry_failed", http.StatusInternalServerError)
-		return
-	}
-	sig := append(pad(rr, 32), pad(ss, 32)...)
-	statement, err := json.Marshal(map[string]any{
-		"payload": payloadB64,
-		"signatures": []map[string]string{{
-			"alg": "ES256", "kid": "keyryxtest-root", "sig": base64.RawURLEncoding.EncodeToString(sig),
-		}},
-	})
-	if err != nil {
-		http.Error(w, "registry_failed", http.StatusInternalServerError)
-		return
+	if s.Tamper != nil {
+		statement = s.Tamper(statement)
 	}
 
 	s.mu.Lock()
@@ -288,6 +378,16 @@ func (s *Server) delegate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) jwks(w http.ResponseWriter, r *http.Request) {
 	if s.unavailable() {
 		http.Error(w, "down", http.StatusServiceUnavailable)
+		return
+	}
+	if r.PathValue("name") == RootName {
+		raw, err := s.Root.KeySet()
+		if err != nil {
+			http.Error(w, "registry_failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write(raw)
 		return
 	}
 	if r.PathValue("name") != s.Name {
@@ -348,6 +448,15 @@ func verifyProof(pub *ecdsa.PublicKey, j delegation.JWK, input, sig []byte) bool
 	r := new(big.Int).SetBytes(sig[:size])
 	s := new(big.Int).SetBytes(sig[size:])
 	return ecdsa.Verify(pub, digest, r, s)
+}
+
+// randomID is 16 random bytes, base64url: a jti the statement grammar accepts.
+func randomID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 func pad(n *big.Int, size int) []byte {

@@ -112,9 +112,13 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.authServerMetadata)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		// With no certified key this service issues nothing, so it is not ready,
-		// and it says so (invariant 27). A file-keyed service is always ready.
+		// and it says so (invariant 27). A key whose statement does not verify
+		// against the pinned root is the same refusal (invariant 28). The answer
+		// is the same oracle-free code either way; the reason and the detail go to
+		// the operator's log through refuse (invariant 11). A file-keyed service is
+		// always ready.
 		if err := s.Signer.Ready(); err != nil {
-			refuse(w, http.StatusServiceUnavailable, "temporarily_unavailable", "no_certified_signing_key", map[string]any{"detail": err.Error()})
+			refuse(w, http.StatusServiceUnavailable, "temporarily_unavailable", signingReason(err), map[string]any{"detail": err.Error()})
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -959,13 +963,22 @@ func (s *Server) signOrRefuse(w http.ResponseWriter, typ string, claims map[stri
 	tok, err := signer.JWS(s.Signer, typ, claims)
 	if err != nil {
 		if errors.Is(err, signer.ErrNotCertified) {
-			refuse(w, http.StatusServiceUnavailable, "temporarily_unavailable", "no_certified_signing_key", map[string]any{"detail": err.Error()})
+			refuse(w, http.StatusServiceUnavailable, "temporarily_unavailable", signingReason(err), map[string]any{"detail": err.Error()})
 			return "", false
 		}
 		refuse(w, http.StatusInternalServerError, "server_error", "signing_failed", map[string]any{"detail": err.Error()})
 		return "", false
 	}
 	return tok, true
+}
+
+// signingReason is the reason a signer that holds no usable key gives for
+// refusing: no key certified, or a key whose statement does not verify.
+func signingReason(err error) string {
+	if errors.Is(err, signer.ErrUnverified) {
+		return "signing_statement_not_verified"
+	}
+	return "no_certified_signing_key"
 }
 
 func merge(a, b map[string]any) map[string]any {
