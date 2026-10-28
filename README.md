@@ -682,10 +682,18 @@ Stated here rather than left to be discovered.
   exercised against RS256 tokens the tests mint in the shape a kubelet writes;
   no k3s or Kubernetes issuer's key set has been configured and no pod has
   asked.
-- **The doors do not yet verify an agent token.** This service mints the
-  contract above; tokenfuse's doors accept it only once their own change
-  lands, and until then an agent token is accepted nowhere but here, as an
-  actor token.
+- **The agent token's door is proven by TokenFuse's tests and one live run,
+  neither in this repository.** TokenFuse's gateway admits an agent token of
+  this service's shape at its LLM doors and its tool-call check, and relays it
+  through its MCP broker. It needs a DPoP proof that names the token and is
+  used once, and it refuses a revoked agent. The tests are
+  `crates/gateway/tests/it/agent_token_is_the_door_credential.rs` in TokenFuse,
+  present since its v1.16.0 release (2026-10-18); the door is off unless the
+  operator sets `TOKENFUSE_AGENT_TOKENS` to `accept` or `require`. A live run on
+  2026-10-26, on one host against TokenFuse 1.20.1, admitted ten agent tokens
+  and refused a replayed proof. The estate's own records hold that measurement.
+  No test here reproduces it, and TokenFuse's tests mint their tokens with its
+  own helper, not with this service's binary.
 - **The `at+jwt` header is signed by a local copy of agent-stack-go's
   signer**, because that library writes `typ: JWT` and takes no header. Every
   token it mints is verified in the tests by the library's own verifier, so the
