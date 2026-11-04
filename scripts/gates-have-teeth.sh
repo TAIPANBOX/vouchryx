@@ -250,6 +250,36 @@ fault "statement: a comment naming the read, beside the jwks route" \
   internal/api/api.go 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {' 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) { // the .Current() read is in internal/signer only' \
   pass ./scripts/statement-checked-before-use.sh
 
+# An issuer's key set is the one its file holds now (invariant 29). A reader of
+# the lists outside internal/config holds the set as it was at start, and the
+# gate must say so.
+fault "issuer keys: the exchange reads the trusted list directly" \
+  internal/api/api.go 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {' 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) { _ = s.Cfg.Trusted' \
+  fail ./scripts/issuer-keys-come-from-the-source.sh
+
+fault "issuer keys: the agent grant reads the workload list directly" \
+  internal/api/api.go 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {' 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) { _ = s.Cfg.Workloads[0].Keys' \
+  fail ./scripts/issuer-keys-come-from-the-source.sh
+
+# The pattern must be alive: with the lists renamed inside internal/config the
+# gate has nothing to compare against and must say it measured nothing.
+fault_all_multi "issuer keys: the trusted list is renamed, so nothing is left to judge" \
+  "internal/config/config.go internal/config/keysource.go" '.Trusted' '.Trustd' \
+  fail ./scripts/issuer-keys-come-from-the-source.sh
+
+fault_all_multi "issuer keys: the workload list is renamed, so nothing is left to judge" \
+  "internal/config/config.go internal/config/keysource.go" '.Workloads' '.Wrkloads' \
+  fail ./scripts/issuer-keys-come-from-the-source.sh
+
+# And it must not fire on a comment that names the list, or on the accessors.
+fault "issuer keys: a comment naming the list beside the jwks route" \
+  internal/api/api.go 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {' 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) { // s.Cfg.Trusted is read in internal/config only' \
+  pass ./scripts/issuer-keys-come-from-the-source.sh
+
+fault "issuer keys: the exchange asks FindIssuer, as it must" \
+  internal/api/api.go 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {' 'func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) { _, _ = s.Cfg.FindIssuer("x")' \
+  pass ./scripts/issuer-keys-come-from-the-source.sh
+
 # --- every gate in scripts/ has a case here ---------------------------------
 #
 # This file is a hand-written list of cases, which is the shape that goes stale

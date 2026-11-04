@@ -14,6 +14,8 @@ package manifest_test
 
 import (
 	"bytes"
+	"context"
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -31,6 +33,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TAIPANBOX/agent-stack-go/v2/delegation"
 	"github.com/TAIPANBOX/vouchryx/internal/demo"
 )
 
@@ -721,5 +724,139 @@ func TestAnAgentIsStoppedAndLetBackAcrossARealRestart(t *testing.T) {
 	}
 	if got := issue(); got != http.StatusOK {
 		t.Fatalf("after the lift the agent got %d", got)
+	}
+}
+
+// A provider rotates its signing key while the service runs. The key set a
+// trusted issuer publishes is a file this service reads, and until it re-read
+// that file a token signed with the new key was refused for as long as the
+// process lived: found 2026-11-04 by the live run against Keycloak 26.8.1,
+// whose new key was in the provider's published set within the second.
+//
+// The real binary, the real file replaced the way a refresh job replaces it
+// (written beside, renamed over), and no wait longer than the reload interval
+// this test sets.
+func TestAProviderThatRotatesItsKeyIsFollowedByARealProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts processes")
+	}
+	_, r := load(t)
+	bin := filepath.Join(t.TempDir(), "vouchryx")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/vouchryx")
+	build.Dir = r
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building: %v\n%s", err, out)
+	}
+	full := workingEnvironment(t, r)
+	addr, issuer := full["VOUCHRYX_ADDR"], full["VOUCHRYX_ISSUER"]
+	dir := filepath.Dir(full["VOUCHRYX_SIGNING_KEY"])
+	jwksPath := filepath.Join(dir, "idp.jwks.json")
+	full["VOUCHRYX_TRUSTED_ISSUERS"] += "|unbound"
+	full["VOUCHRYX_JWKS_RELOAD_SECONDS"] = "1"
+
+	oldKey, err := demo.ReadKey(filepath.Join(dir, "idp.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newKey, err := demo.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := demo.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish := func(keys map[string]*ecdsa.PrivateKey) {
+		var set delegation.Set
+		for kid, k := range keys {
+			set.Keys = append(set.Keys, delegation.FromPublic(&k.PublicKey, kid))
+		}
+		body, err := json.Marshal(set)
+		if err != nil {
+			t.Fatal(err)
+		}
+		beside := jwksPath + ".new"
+		if err := os.WriteFile(beside, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(beside, jwksPath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n := 0
+	exchange := func(key *ecdsa.PrivateKey, kid string) error {
+		n++
+		now := time.Now()
+		subject, err := demo.InputToken(key, kid, "https://idp.test", issuer, "user://acme.example/ada", now, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actor, err := demo.InputToken(key, kid, "https://idp.test", issuer, "agent://acme.example/agents/triage", now, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proof, err := demo.Proof(holder, "POST", issuer+"/v1/token", fmt.Sprintf("rotation-%d-%d", n, now.UnixNano()), now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = demo.Exchange(context.Background(), http.DefaultClient, "http://"+addr+"/v1/token", subject, actor, proof)
+		return err
+	}
+	until := func(d time.Duration, want bool, key *ecdsa.PrivateKey, kid string) bool {
+		deadline := time.Now().Add(d)
+		for time.Now().Before(deadline) {
+			if (exchange(key, kid) == nil) == want {
+				return true
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		return false
+	}
+
+	publish(map[string]*ecdsa.PrivateKey{"t": oldKey})
+	cmd := exec.Command(bin)
+	for k, v := range full {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	if !waitFor(addr, 10*time.Second) {
+		t.Fatalf("the service never listened on %s", addr)
+	}
+
+	if err := exchange(oldKey, "t"); err != nil {
+		t.Fatalf("before the rotation a token from the provider's key was refused: %v", err)
+	}
+	if err := exchange(newKey, "t2"); err == nil {
+		t.Fatal("a token signed by a key the file does not hold was exchanged")
+	}
+
+	publish(map[string]*ecdsa.PrivateKey{"t": oldKey, "t2": newKey})
+	if !until(10*time.Second, true, newKey, "t2") {
+		t.Fatal("ten seconds after the provider's new key was published, a token signed by it was still refused: the process does not follow its key set file")
+	}
+	if err := exchange(oldKey, "t"); err != nil {
+		t.Fatalf("adding the new key took the old one away: %v", err)
+	}
+
+	// A file that is not a key set is not a decision to trust nobody: the keys
+	// already held stay in force, and the process goes on.
+	if err := os.WriteFile(jwksPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2500 * time.Millisecond)
+	if err := exchange(newKey, "t2"); err != nil {
+		t.Fatalf("a broken key set file took the held keys away: %v", err)
+	}
+
+	// Removing a key from the file is how an operator stops trusting it.
+	publish(map[string]*ecdsa.PrivateKey{"t2": newKey})
+	if !until(10*time.Second, false, oldKey, "t") {
+		t.Fatal("ten seconds after the old key was removed from the file, a token signed by it was still exchanged")
+	}
+	if err := exchange(newKey, "t2"); err != nil {
+		t.Fatalf("the remaining key stopped working: %v", err)
 	}
 }

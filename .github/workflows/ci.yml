@@ -56,6 +56,8 @@ jobs:
         run: ./scripts/one-signer-for-every-token.sh
       - name: every delegated key's statement is checked before it signs
         run: ./scripts/statement-checked-before-use.sh
+      - name: no issuer's key set is read from a copy taken at start
+        run: ./scripts/issuer-keys-come-from-the-source.sh
       - name: the Dockerfile's base images are pinned by digest
         run: ./scripts/base-images-pinned-by-digest.sh
       - name: the gates have teeth

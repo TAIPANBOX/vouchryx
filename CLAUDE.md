@@ -820,6 +820,61 @@ not a convenience.
     Gate `scripts/statement-checked-before-use.sh` with four teeth cases; scenarios:
     `features/signing.feature`)*
 
+29. **An issuer's key set is the one its file holds now, not the one it held at
+    start.** `@claude 2026-11-04`, found by the live run against Keycloak 26.8.1
+    (`labs/oidc-keycloak`): the provider rotated its signing key while this ran, its
+    new key was in the published set the same second, and a token signed by it was
+    refused with `no key in the set has that kid` for as long as the process
+    lived, because `VOUCHRYX_TRUSTED_ISSUERS` and `VOUCHRYX_WORKLOAD_ISSUERS` read
+    each key set file once. The design is this repository's, open to reversal: the
+    files are read again every `VOUCHRYX_JWKS_RELOAD_SECONDS` (default 30, `0`
+    never, a whole number of seconds up to a day, compared before it is multiplied
+    into a duration as in invariant 16), and this service still fetches nothing,
+    so a refresh job writes the file and this service reads it. Fetching a
+    provider's `jwks_uri` from here would make it an outbound caller and an
+    availability dependency of every exchange, which is a conversation, not a fix.
+
+    A file that cannot be used never replaces the keys held: unreadable, not
+    JSON, an error page, no keys, a key with no `kty` or no `kid` are refused with
+    the same reading the start applies (`parseKeySet`, shared by both), the issuer
+    keeps the set it has, and the refusal is logged once while it lasts and the
+    recovery once. A file that is gone is the same. Removing a key from a file that
+    reads is how an operator stops trusting it, so a reload replaces the set and
+    does not merge into it. Every reader gets the set as it stands through
+    `Config.FindIssuer` or `Config.FindWorkloadIssuer`; a copy of an `Issuer`
+    taken from `Trusted` or `Workloads` is the set at the moment of the copy, so
+    nothing outside `internal/config` reads those lists. Nothing about this
+    changes what is verified or how: invariants 1 and 2 hold as written, the
+    algorithm from the key's type and the key the token names.
+    *(gate: `scripts/issuer-keys-come-from-the-source.sh`, which discovers every
+    non-test Go file under `cmd` and `internal` outside `internal/config` and
+    requires none to read either list, and requires both names to be alive inside
+    `internal/config` so a rename cannot leave it passing over nothing; five cases
+    in `gates-have-teeth.sh`. Tests: `TestAKeyAddedToTheFileIsHeldAfterAReload`,
+    `TestAKeyRemovedFromTheFileIsNotHeldAfterAReload`,
+    `TestAnUnchangedFileReportsNothing`, `TestAFileThatCannotBeUsedLeavesTheKeysInForce`,
+    `TestAFileThatIsGoneLeavesTheKeysInForce`,
+    `TestAFailureIsReportedOnceAndTheRecoveryIsReported`,
+    `TestTheWorkloadIssuersFollowTheirFilesToo`,
+    `TestAnIssuerBuiltWithoutAFileHasNothingToReload`,
+    `TestTheReloadIntervalIsReadAndAMalformedOneRefusesToStart`,
+    `TestTheCountsOfConfiguredIssuersAreWhatTheStartupLineReports` (`internal/config`);
+    `TestATokenFromAProviderThatRotatedItsKeyIsExchangedOnceTheFileFollows`,
+    `TestAKeyTheOperatorRemovedFromTheFileStopsVerifyingAfterTheReload`,
+    `TestABrokenKeySetFileKeepsTheKeysHeldAndTheExchangeWorking` (`internal/api`);
+    `TestAProviderThatRotatesItsKeyIsFollowedByARealProcess` (`internal/manifest`,
+    the built binary, the file replaced by rename, red on the unfixed binary:
+    ten seconds after the new key was published its token was still refused);
+    mutants, each caught by a named test: a reload that merges into the held set
+    instead of replacing it (the removal tests), an unusable file that empties the
+    held set, `FindIssuer` and `FindWorkloadIssuer` each returning the copy taken at
+    start, the reload skipping the workload issuers, a reload that does not
+    validate the file as the start does (`TestAFileThatCannotBeUsedLeavesTheKeysInForce`),
+    the interval compared after the multiplication, a failure reported on every
+    pass, an unchanged file reported as changed, a recovery never reported, the
+    loop in `main` reading nothing, and the interval read and then ignored (the
+    last two by the real-binary test). Scenarios: `features/issuer-keys.feature`)*
+
 ## Distribution
 
 Published as a container image, `ghcr.io/taipanbox/vouchryx`, built by

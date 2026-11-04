@@ -10,7 +10,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -48,14 +47,30 @@ type Issuer struct {
 	// Audience is the `aud` this service requires, so a token minted for
 	// somebody else cannot be spent here.
 	Audience string
-	// Keys is the issuer's JWKS, read once at startup. Offline verification,
+	// Keys is the issuer's JWKS as read from its file. Offline verification,
 	// for the reason the plan gives: the PDP runs at a 3.2 ms p50 and a
-	// network fetch inside the request path taxes every delegation.
+	// network fetch inside the request path taxes every delegation. It is the
+	// set at the moment FindIssuer or FindWorkloadIssuer was asked, and the file
+	// is read again while the service runs (invariant 29): code outside this
+	// package never holds an issuer from Trusted or Workloads directly, because
+	// that copy is the set as it was at start.
 	Keys delegation.Set
 	// Unbound marks an issuer whose subject tokens carry no `cnf.jkt`. Set
 	// only by the operator, with a fourth `|unbound` field on its
 	// VOUCHRYX_TRUSTED_ISSUERS line; never read from a token (invariant 26).
 	Unbound bool
+	// src is where Keys came from and what refreshes them. Nil for an issuer
+	// built by hand (a test), which then keeps the Keys it was built with.
+	src *keySource
+}
+
+// current is the issuer as it stands now: the same line, the key set the file
+// held at its last good read.
+func (i Issuer) current() Issuer {
+	if i.src != nil {
+		i.Keys = i.src.current()
+	}
+	return i
 }
 
 // Config is everything this process needs.
@@ -72,6 +87,9 @@ type Config struct {
 	TTL        time.Duration
 	Trusted    []Issuer
 	EventsPath string
+	// KeyReload is how often the key set files of Trusted and Workloads are read
+	// again, VOUCHRYX_JWKS_RELOAD_SECONDS; 0 never (invariant 29).
+	KeyReload time.Duration
 	// RevokeKeys are the bearer keys that may call POST /v1/revoke. OPTIONAL,
 	// because making it required would stop every existing bring-up. When it
 	// is empty, /v1/revoke refuses every call rather than accepting one from
@@ -297,6 +315,10 @@ func FromEnv() (Config, error) {
 				"without one this service would exchange tokens it has no way to verify")
 	}
 	c.Trusted = trusted
+	raw, set := os.LookupEnv("VOUCHRYX_JWKS_RELOAD_SECONDS")
+	if c.KeyReload, err = keyReloadFromEnv(raw, set); err != nil {
+		return c, err
+	}
 
 	// A malformed but non-empty VOUCHRYX_XAA_REQUIRE_DPOP is refused
 	// unconditionally, the same "malformed is not well-formed" discipline
@@ -376,11 +398,20 @@ func (c Config) IssuesUnbound(iss string) bool {
 	return ok && i.Unbound
 }
 
+// TrustedCount and WorkloadCount say how many issuers are configured, for the
+// startup line. Code outside this package never holds the lists themselves: a
+// copy of an Issuer is the key set as it was when the copy was taken, and only
+// FindIssuer and FindWorkloadIssuer return the set as it stands (invariant 29).
+func (c Config) TrustedCount() int { return len(c.Trusted) }
+
+// WorkloadCount is TrustedCount for VOUCHRYX_WORKLOAD_ISSUERS.
+func (c Config) WorkloadCount() int { return len(c.Workloads) }
+
 // FindIssuer returns the trusted issuer with this `iss`.
 func (c Config) FindIssuer(iss string) (Issuer, bool) {
 	for _, i := range c.Trusted {
 		if i.Iss == iss {
-			return i, true
+			return i.current(), true
 		}
 	}
 	return Issuer{}, false
@@ -506,37 +537,12 @@ func loadTrusted(name, spec string) ([]Issuer, error) {
 				"%s entry for %s has an empty audience; an empty "+
 					"audience accepts a token minted for any audience", name, parts[0])
 		}
-		raw, err := os.ReadFile(parts[2]) // #nosec G304 -- operator-supplied path from the environment, read once at startup
+		raw, set, err := readKeySet(name, parts[0], parts[2])
 		if err != nil {
-			return nil, fmt.Errorf("%s: reading the JWKS for %s at %s: %w", name, parts[0], parts[2], err)
+			return nil, err
 		}
-		var set delegation.Set
-		if err := json.Unmarshal(raw, &set); err != nil {
-			return nil, fmt.Errorf("the JWKS for %s at %s is not a JWK Set: %w", parts[0], parts[2], err)
-		}
-		if len(set.Keys) == 0 {
-			return nil, fmt.Errorf("the JWKS for %s at %s has no keys", parts[0], parts[2])
-		}
-		for _, k := range set.Keys {
-			if k.Kty == "" {
-				// A key with no type cannot be matched to an algorithm: this
-				// service's allowlist is keyed by TYPE, never by the token
-				// header (invariant 1), and an empty Kty has no type to key
-				// on. An off-curve point or a bad coordinate is refused later,
-				// at verification time, by the library this service calls
-				// (fail closed); a full key validator here would be an
-				// agent-stack-go surface addition and is out of this batch.
-				return nil, fmt.Errorf(
-					"a key in the JWKS for %s (kid %q) has no kty; a key with no type "+
-						"verifies nothing", parts[0], k.Kid)
-			}
-			if k.Kid == "" {
-				return nil, fmt.Errorf(
-					"a key in the JWKS for %s has no kid; this service matches by kid and "+
-						"will not try every key in turn", parts[0])
-			}
-		}
-		out = append(out, Issuer{Iss: parts[0], Audience: parts[1], Keys: set, Unbound: unbound})
+		out = append(out, Issuer{Iss: parts[0], Audience: parts[1], Keys: set, Unbound: unbound,
+			src: newKeySource(name, parts[0], parts[2], raw, set)})
 	}
 	return out, nil
 }
@@ -578,7 +584,7 @@ func splitLines(s string) []string {
 func (c Config) FindWorkloadIssuer(iss string) (Issuer, bool) {
 	for _, i := range c.Workloads {
 		if i.Iss == iss {
-			return i, true
+			return i.current(), true
 		}
 	}
 	return Issuer{}, false

@@ -18,6 +18,7 @@
 //	VOUCHRYX_KEYRYX_CREDENTIAL_FILE  its key or projected token file: exactly one of the two with keyryx
 //	VOUCHRYX_KEYRYX_ROOT_PIN  the delegation root's kids (ES384 and ML-DSA-65), required with keyryx
 //	VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path[|unbound]` per line; optional once VOUCHRYX_AGENTS enrols an agent
+//	VOUCHRYX_JWKS_RELOAD_SECONDS  how often the key set files above are read again, default 30; 0 never
 //	VOUCHRYX_TTL_SECONDS      default 300, capped at one hour
 //	VOUCHRYX_EVENTS_PATH      agent-event NDJSON, optional
 //	VOUCHRYX_REVOCATIONS_PATH where revocations are kept across a restart, optional
@@ -128,17 +129,19 @@ func main() {
 
 	if cfg.Agents != nil {
 		log.Printf("vouchryx: the client_credentials grant is open: %d agent(s) enrolled, %d workload issuer(s)",
-			cfg.Agents.Len(), len(cfg.Workloads))
+			cfg.Agents.Len(), cfg.WorkloadCount())
 	} else {
 		log.Printf("vouchryx: VOUCHRYX_AGENTS is unset, so the client_credentials grant " +
 			"answers unauthorized_client to every call")
 	}
 
+	watchKeySets(cfg)
+
 	if warn := bindWarning(cfg.Addr); warn != "" {
 		log.Printf("vouchryx: %s", warn)
 	}
 	log.Printf("vouchryx: version %s, listening on %s, issuing as %s, trusting %d issuer(s), ttl %v",
-		version, cfg.Addr, cfg.Issuer, len(cfg.Trusted), cfg.TTL)
+		version, cfg.Addr, cfg.Issuer, cfg.TrustedCount(), cfg.TTL)
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -155,6 +158,38 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("vouchryx: %v", err)
 	}
+}
+
+// watchKeySets reads the key set files of the trusted and workload issuers
+// again every cfg.KeyReload, for the life of the process (invariant 29). A
+// provider rotates its signing key while this runs, and the file a refresh job
+// replaces is the only way the new key reaches it: nothing here fetches from the
+// provider, so the service still calls out to nothing.
+func watchKeySets(cfg config.Config) {
+	files := cfg.TrustedCount() + cfg.WorkloadCount()
+	switch {
+	case files == 0:
+		return
+	case cfg.KeyReload == 0:
+		log.Printf("vouchryx: VOUCHRYX_JWKS_RELOAD_SECONDS is 0, so the key set of %d issuer(s) is read at start and never again; "+
+			"a provider that rotates its signing key is refused until this restarts", files)
+		return
+	}
+	log.Printf("vouchryx: re-reading the key set file of %d issuer(s) every %v", files, cfg.KeyReload)
+	go func() {
+		for range time.Tick(cfg.KeyReload) {
+			for _, r := range cfg.ReloadKeys() {
+				switch {
+				case r.Err != nil:
+					log.Printf("vouchryx: the key set of %s was not reloaded, the keys already held stay in force: %v", r.Iss, r.Err)
+				case r.Changed:
+					log.Printf("vouchryx: the key set of %s changed in %s, now holding kids %v", r.Iss, r.Path, r.Kids)
+				case r.Recovered:
+					log.Printf("vouchryx: the key set file of %s at %s is usable again", r.Iss, r.Path)
+				}
+			}
+		}
+	}()
 }
 
 // bindWarning says something when this binds somewhere the whole network can
