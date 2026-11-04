@@ -1,0 +1,198 @@
+
+================ provision the two realms
+vxlive: HTTP 201
+vxother: HTTP 201
+vxlive: key set warmed
+vxother: key set warmed
+
+================ phase 1: bound subject tokens, DPoP, hostile tokens, revoke, ban, lift
+vouchryx up
+### versions
+keycloak: quay.io/keycloak/keycloak:26.8.1 quay.io/keycloak/keycloak@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
+vouchryx: vxlive-vouchryx:fix sha256:010be6bb34e12d59625195a5f20abc5733efbba6cc207514b3ebcef333546aba
+
+### 1. exchange with real Keycloak tokens
+PASS  Keycloak user token is RS256 and DPoP-bound
+PASS  Keycloak user token carries cnf.jkt of holder1
+PASS  token exchange answers 200
+PASS  delegation token header ES256/JWT
+PASS  sub is the user, act is the agent
+PASS  bound to the actor's key (holder2)
+PASS  lifetime is 300 s
+PASS  issued_token_type and token_type
+PASS  door accepts it with holder2's proof
+PASS  door refuses it with holder1's proof
+PASS  events: delegation_issued filed under the agent
+
+### 2. DPoP binding at the exchange
+PASS  no DPoP header refused
+PASS    reason (log)
+PASS  bound subject presented by another key refused
+PASS    reason (log)
+PASS  proof minted for another URL refused
+PASS    reason (log)
+PASS  proof minted for another method refused
+PASS    reason (log)
+PASS  fresh proof accepted
+PASS  the same proof replayed refused
+PASS    reason (log)
+
+### 3. hostile or wrong tokens from the real provider
+PASS  token from an untrusted realm (vxother) refused
+PASS    reason (log)
+PASS  token with aud=account (no vouchryx audience) refused
+PASS    reason (log)
+PASS  payload aud swapped, signature kept refused
+PASS    reason (log)
+PASS  payload sub swapped, signature kept refused
+PASS    reason (log)
+PASS  payload exp pushed out, signature kept refused
+PASS    reason (log)
+PASS  alg none refused
+PASS    reason (log)
+PASS  alg HS256 with the RSA public key as the secret refused
+PASS    reason (log)
+PASS  alg changed RS256 to RS512, signature kept refused
+PASS    reason (log)
+PASS  alg ES256 on a token whose kid names an RSA key refused
+PASS    reason (log)
+PASS  alg none on the ACTOR token refused
+PASS    reason (log)
+-- expiry: a real 5 s token, then 7 s
+PASS  expired Keycloak token refused
+PASS    reason (log)
+-- ES256: the same realm signing with an EC key
+PASS  Keycloak ES256 token header
+PASS  ES256 subject token exchanged
+-- audience asked for
+PASS  audience off the allow-list refused
+
+### 4. revoke: time to the first refusal
+PASS  door accepts before the revoke
+revoke call: sent 12:00:06.767, answered 12:00:06.790  -> 200	{"expires":1793797206,"revoked":true}
+PASS  revoke answered 200 revoked
+--- watcher (1 s poll) ---
+12:00:03.770 ACCEPT sub=user://vxlive/ada actors=[agent://vxlive/triage] jkt=cg_pa9bLLn6aS4FZHxkZ2oZzUQZw3e6eE-cv5-GY3Ro
+12:00:04.771 ACCEPT sub=user://vxlive/ada actors=[agent://vxlive/triage] jkt=cg_pa9bLLn6aS4FZHxkZ2oZzUQZw3e6eE-cv5-GY3Ro
+12:00:05.773 ACCEPT sub=user://vxlive/ada actors=[agent://vxlive/triage] jkt=cg_pa9bLLn6aS4FZHxkZ2oZzUQZw3e6eE-cv5-GY3Ro
+12:00:06.776 ACCEPT sub=user://vxlive/ada actors=[agent://vxlive/triage] jkt=cg_pa9bLLn6aS4FZHxkZ2oZzUQZw3e6eE-cv5-GY3Ro
+12:00:07.779 REFUSE delegation: this delegation has been revoked
+first refusal at the door: 12:00:07.779 (revoke answered 12:00:06.790)
+PASS  door refused after the revoke
+PASS  exchange with a token minted before the revoke refused
+PASS    reason (log)
+PASS  token minted after the revoke exchanges (revoking is not banning)
+PASS  public list carries no actor and no reason
+PASS  revoke without the key refused
+-- the same, polling every 100 ms: the delay is the poll, not the service
+revoke sent 12:00:13.335, the script read its clock for the answer at 12:00:13.364; the list already held 2 entries at 12:00:13.406
+first refusal at the door 12:00:13.362: 27 ms after the revoke was sent, at a 100 ms poll (the request itself is inside that figure)
+PASS  door refused within 500 ms of the revoke being sent at a 100 ms poll
+
+### 5. ban and lift
+PASS  door accepts the agent's delegation before the ban
+ban: 200	{"banned":true,"durable":true,"expires":1793797215,"revoked":true}
+PASS  ban answered 200 banned durable
+PASS  fresh tokens, banned agent: refused
+PASS    reason (log)
+PASS  door refuses the delegation issued before the ban
+-- restart the service with the ban in force
+vouchryx: restored 3 active revocation(s) and 1 standing ban(s) from /data/revocations.ndjson, dropped 0 expired
+PASS  banned agent still refused after a restart
+PASS    reason (log)
+lift: 200	{"durable":true,"lifted":true}
+PASS  lift answered 200 lifted
+PASS  after the lift a fresh exchange succeeds
+PASS  the delegation held at ban time stays revoked after the lift
+PASS  lifting an agent that is not banned refused
+-- ban a person
+PASS  banned user refused
+PASS    reason (log)
+
+### result: 69 passed, 0 failed
+
+================ phase 2: a provider that sends keyless tokens
+PASS  Keycloak bearer token carries no cnf
+PASS  unbound subject token from an unmarked issuer refused
+PASS    reason (log)
+### result: 3 passed, 0 failed
+PASS  Keycloak bearer token carries no cnf
+PASS  unbound subject token from a marked issuer exchanged
+PASS    bound to the actor's key, not the presenter's
+PASS    record says the subject was unbound
+PASS  marked issuer: a bound ACTOR token is exchanged only by its holder
+### result: 5 passed, 0 failed
+
+================ phase 3: agents, hand-off, workload token, ban in the chain
+### 1. an agent's own credential
+PASS  enrolment key: 200
+PASS    header typ at+jwt, alg ES256
+PASS    sub and client_id are the agent
+PASS    bound to holder3
+PASS    auth_src, unit, org
+PASS    lifetime at most 300 s
+PASS  wrong enrolment key: 401
+PASS  door accepts the agent token as an agent token
+PASS  Keycloak workload assertion: one audience
+PASS  workload token from the real provider: 200
+PASS    auth_src names the provider's issuer
+PASS    sub is the agent the provider's subject is bound to
+PASS  workload assertion with a damaged signature refused
+PASS  a token for the exchange audience is not a workload assertion
+
+### 2. the agent's credential as the actor of an exchange (the user's token from the real provider)
+PASS  user (holder1) + runner credential (holder3): 200
+PASS    unit and org copied from the agent's own credential
+PASS    bound to the agent's key
+PASS    door accepts with holder3
+
+### 3. hand-off: the delegation comes back as the subject of the next exchange
+PASS  user -> triage (holder2): 200
+PASS  triage hands it to runner, presented by triage's key: 200
+PASS    chain is user, triage, runner
+PASS  the hand-off presented by anyone else refused
+PASS    reason (log)
+
+### 4. ban reaches into the chain and into the agent's own credential
+PASS  ban the second agent: 200
+PASS  door refuses the three-party chain
+PASS  door still accepts the one-hop delegation that does not name runner
+PASS  the banned agent gets no credential of its own
+PASS    reason (log)
+PASS  hand-off naming the banned agent refused
+PASS  lift: 200
+PASS  after the lift the agent gets a credential again
+PASS  the chain issued before the ban stays revoked
+
+### 5. revoking one credential by its jti
+PASS  revoke by jti: 200
+PASS  a revoked agent credential issues nothing as an actor
+PASS    reason (log)
+
+### result: 35 passed, 0 failed
+
+================ rotation: the provider changes its signing key while vouchryx runs
+PASS  before the rotation: exchange works (kid -cjjFyb5aWWnEDs_nmKboBQ77Atq_3VX-0_b04m5sX0)
+-- Keycloak: a new RS256 key, higher priority
+create key provider: HTTP 201
+PASS  Keycloak now signs with another kid
+PASS  Keycloak publishes the new key
+PASS  after the rotation, before the file is refreshed: the new key is not yet held
+   last refusal: refused (invalid_grant): bad_subject_token [detail=delegation: no key in the set has that kid]
+-- the refresh job replaces the key set file
+PASS  the file now holds the new key
+   file replaced -> first exchange with a token from the new key: 3.6 s (reload interval 5 s)
+PASS  a legitimate token signed by the provider's new key is exchanged without a restart
+PASS    the service logged the change
+PASS  a token signed by the old key still works while the file holds it
+-- a broken file: an error page where the key set was
+PASS  the keys already held stay in force
+PASS    the service said it did not reload
+PASS    and said when the file was usable again
+-- the operator withdraws the old key
+PASS  a token signed by the withdrawn key is refused
+   last refusal: refused (invalid_grant): bad_subject_token [detail=delegation: no key in the set has that kid]
+PASS  and tokens from the current key still work
+### result: 13 passed, 0 failed
+
+ALL PHASES PASSED
