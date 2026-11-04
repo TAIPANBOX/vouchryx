@@ -54,7 +54,10 @@ flowchart TB
   VCX ==>|"delegation_issued / denied / revoked"| BUS
   TF ==>|"agent-event NDJSON"| BUS{{"agent-event bus + Agent Passport"}}
   WX ==> BUS
-  Agent -->|"web fetch"| SCX["Scopyx: governed web egress"]
+  Agent -->|"web fetch: MCP tools/call"| BRK["TokenFuse MCP broker: the scopyx key from its vault, the run labelled from the act"]
+  BRK -->|"last hop"| SCX["Scopyx: governed web egress"]
+  BRK -->|"observed act"| TF
+  Agent -.->|"or direct, key in a header"| SCX
   SCX -->|"POST /v1/decide"| WX
   SCX ==>|"web_fetch / web_blocked"| BUS
   ENG["Engram: memory"] -->|"reflect via base_url"| TF
@@ -65,6 +68,7 @@ flowchart TB
   QX ==>|"crypto events"| BUS
   BUS ==> VX["Verdryx: quality / drift"]
   VX ==>|"quality events"| BUS
+  VX ==>|"slo_burn: a policy can hold the agent"| WX
   TF -->|"outcome-tagged traces"| VX
   MX["Mockryx: pre-prod safety rehearsal"] -->|"hostile scenarios"| TF
   MX ==>|"sim events"| BUS
@@ -75,7 +79,7 @@ flowchart TB
   HX -->|"one mail, a view and never an action"| OPS["your mailbox"]
   HX ==>|"alert_sent"| HJ[("heraldyx's own hash-chained journal, not this bus")]
   YOU(["you, in a browser over your own tunnel"]) --> GX[["Genaryx: the console over all of it"]]
-  GX -->|"signed commands: the kill, an approval, a policy"| CL
+  GX -->|"commands: the kill, an approval, a policy"| CL
   GX -->|"signed commands"| WX
   GX ==>|"console_command"| BUS
   GX -.->|"reads it"| IDX
@@ -480,21 +484,25 @@ refused leaves the ban standing.
 ## Where the crypto lives
 
 **Not here.** Verification, the algorithm allowlist, the DPoP proof check and
-the `act` chain are `agent-stack-go/delegation`, pinned in `go.mod` (at a merged
-`keyclient` commit, since the wave-2 signing work; the release that carries it is
-the owner's to tag). The JWS of a token this service issues is assembled by
+the `act` chain are `agent-stack-go/delegation`, pinned in `go.mod` (`agent-stack-go/v2`
+v2.0.2, which carries the `keyclient` the wave-2 signing work uses). The JWS of a token this service issues is assembled by
 `internal/signer` (CLAUDE.md invariant 27), which signs with the file key, or,
 with `VOUCHRYX_SIGNER=keyryx`, with the working key held by `keyclient` and
 certified by Keyryx. Keyryx's statement for that key is verified against the
 delegation root this service pins, in `internal/statement`, before the key is
 used (invariant 28). `delegation.SignES256` is no longer called. This
-service imports the library, and today it is the only Go service that does: measured
-2026-09-16 over every Go repository in the stack, `wardryx`, `idryx`,
-`scopyx`, `heraldyx` and `mockryx` import nothing from that package. What this
-service issues is verified at TokenFuse's two doors (its Rust `delegation`
-crate, offline, from a configured issuer and JWKS) when an operator turns
-that on, and nowhere else yet. Wardryx reads a `chain_proven` fact a door
-established; it does not verify a token itself.
+service imports the library. When that was measured, on 2026-09-16 over every Go
+repository in the stack, it was the only Go service that did. Measured again on
+2026-11-04 over `main` of `wardryx`, `keyryx`, `idryx`, `scopyx`, `heraldyx`,
+`mockryx`, `qryx`, `costcrew` and `typryx` (`git grep` for the package's import
+path): `wardryx` (`internal/agenttoken`, since 2.3.0) and `keyryx` (its request
+authentication, key store and statements) import it, and the others import
+nothing from it. What this service issues is verified at TokenFuse's two doors
+(its Rust `delegation` crate, offline, from a configured issuer and JWKS) when an
+operator turns that on, and, for an agent's own token and its DPoP proof, by
+wardryx's `/v1/decide` when `WARDRYX_AGENT_TOKEN_ISSUER` is set (wardryx 2.3.0).
+Wardryx reads a `chain_proven` fact a door established for a delegation chain;
+it does not verify a chain itself.
 
 Measured 2026-09-27 end to end, on a lab image built from this repository's
 `main` and run in a three-node cluster: with the gateway's delegation door on
@@ -627,8 +635,8 @@ Stated here rather than left to be discovered.
   reading, not by a test.
 - **The DPoP replay cache is in memory too**, bounded by a 60-second window. For
   one window after a restart, a captured proof could be replayed once.
-- **One enforcement point verifies these tokens on a request path, and it is
-  the only one.** TokenFuse's gateway has been that caller since 2026-08-26:
+- **Two enforcement points verify these tokens on a request path.** TokenFuse's
+  gateway has been the first caller since 2026-08-26:
   `crates/gateway/src/revocations.rs` polls `GET /v1/revocations` in a
   background task, installs the snapshot under a lock, and both doors read it
   synchronously through `chainproof::resolve`, the LLM proxy in `proxy.rs` and
@@ -636,9 +644,13 @@ Stated here rather than left to be discovered.
   is off until `TOKENFUSE_DELEGATION_REVOCATIONS` names a URL; naming one makes
   the first fetch a startup condition, the fail mode defaults to closed, and
   naming it with no issuer configured is refused with the same exit code as any
-  other check that could never fire. What is still missing is a second caller:
-  no Go service in the estate sets `delegation.Options.Revoked`, so
-  `delegation.Revocations` in `agent-stack-go` is a cache nothing constructs.
+  other check that could never fire. The second is wardryx, since 2.3.0: with
+  `WARDRYX_AGENT_TOKEN_ISSUER` set, `internal/agenttoken` verifies an agent's own
+  token and its DPoP proof with `delegation.VerifyRelayedAccess`, builds a
+  `delegation.Revocations` from `WARDRYX_AGENT_TOKEN_REVOCATION_URL` and asks it
+  on every call (and since 2.5.0 the record of accepted proofs is shared through
+  the database). What no Go service does is set `delegation.Options.Revoked`
+  for a delegation chain: wardryx's check is the agent token's.
 - **The audience list is trusted as written.** Whoever sets
   `VOUCHRYX_ALLOWED_AUDIENCES` decides which resources a delegation may be
   spent at. Nothing here checks that a listed URL is the resource the operator
