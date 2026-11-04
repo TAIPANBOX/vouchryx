@@ -43,6 +43,7 @@
           "VOUCHRYX_ALLOWED_AUDIENCES": { "required": false },
           "VOUCHRYX_AGENTS": { "required": false },
           "VOUCHRYX_WORKLOAD_ISSUERS": { "required": false },
+          "VOUCHRYX_JWKS_RELOAD_SECONDS": { "required": false },
           "VOUCHRYX_SIGNER": { "required": false },
           "VOUCHRYX_KEYRYX_URL": { "required": false },
           "VOUCHRYX_KEYRYX_CONSUMER": { "required": false },
@@ -96,6 +97,10 @@
         "workload_issuers_default": {
           "value": "unset: no cluster's service-account token proves anything here, and an agent bound to a workload issuer refuses the start",
           "why": "optional because only a launcher running agents in a cluster has a workload issuer to name; required in effect once VOUCHRYX_AGENTS binds an agent to one, which internal/config refuses otherwise, a conditional rule this manifest's required/optional split cannot express"
+        },
+        "jwks_reload_default": {
+          "value": "unset: the key set file of every trusted and workload issuer is read again every 30 seconds; 0 reads it at start only",
+          "why": "optional because a bring-up with files that never change needs nothing from it, and the unset behaviour is the safe one for a provider that rotates its signing key: a refreshed file takes effect without a restart. A file that cannot be used never replaces the keys held (CLAUDE.md invariant 29). The number is how long an operator is willing to wait, not a value this service can infer."
         },
         "signing_key_conditional": {
           "value": "required unless VOUCHRYX_SIGNER=keyryx; in keyryx mode optional, and when set it is the migration's overlap key, published and never used to sign",

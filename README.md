@@ -212,7 +212,11 @@ VOUCHRYX_KEYRYX_ROOT_PIN  the delegation root's kids, one ES384 and one ML-DSA-6
                           (CLAUDE.md invariant 28); a malformed pin refuses the start
 VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path`, one per line; add `|unbound`
                           for an issuer whose subject tokens carry no key
-                          (such a token is refused without the marker)
+                          (such a token is refused without the marker). The
+                          key set file is read again while this runs
+VOUCHRYX_JWKS_RELOAD_SECONDS  how often the key set files of the trusted and
+                          the workload issuers are read again, default 30;
+                          0 reads them at start only (CLAUDE.md invariant 29)
 VOUCHRYX_TTL_SECONDS      default 300, capped at 3600
 VOUCHRYX_EVENTS_PATH      agent-event NDJSON; unset means nothing is recorded
 VOUCHRYX_REVOCATIONS_PATH revocations kept on disk across a restart; unset,
@@ -239,6 +243,32 @@ VOUCHRYX_WORKLOAD_ISSUERS `iss|aud|jwks-path` per cluster whose projected
 A missing or malformed value **aborts the process** and names the variable. A
 token service that came up trusting nothing would issue nothing and look
 healthy; one that came up trusting a default would issue everything.
+
+### What an identity provider has to look like
+
+Measured against a real provider (Keycloak 26.8.1, `labs/oidc-keycloak`), the
+trusted-issuer line works as described, with three facts an operator needs:
+
+- **The key set is a file, and a provider rotates its key.** Fetch the
+  provider's `jwks_uri` into the file with whatever refreshes things on your
+  side (a cron job, a sidecar) and replace the file by writing beside it and
+  renaming over it. This service reads it again every
+  `VOUCHRYX_JWKS_RELOAD_SECONDS` and holds the keys it has when a read fails;
+  to stop trusting a key, remove it from the file. It still fetches nothing
+  itself. Mount the directory, not the single file: a container's single-file
+  bind mount keeps following the old inode after a rename.
+- **`sub` must be a `user://` or `agent://` URI.** A chain entry is one of the
+  two (`agent-stack-go`'s grammar), and a provider's own `sub` is an opaque id
+  (a UUID in Keycloak, a pairwise id in Entra). The exchange refuses such a
+  token with `bad_delegation_chain`, in the log only, until the provider is
+  told to write the URI into `sub`: in Keycloak a "Hardcoded claim" or a
+  "User Attribute" mapper whose claim name is `sub` replaces the default one
+  (`labs/oidc-keycloak/provision.sh` does it for the test realm). A mapping from
+  an opaque `sub` to a URI is a naming decision this service does not make.
+- **A provider that binds its tokens with DPoP gives a `cnf.jkt` this service
+  honours; one that does not needs the `|unbound` marker.** Keycloak 26.8.1
+  binds access tokens to the client's key when the client asks for it, and the
+  thumbprint it writes is the one this service computes.
 
 ## Walking the loop
 
@@ -521,7 +551,7 @@ line, both written every time.
 
 ## Testing
 
-283 tests. Tier T3: these are authorization decisions where a wrong answer is
+297 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **The statement check (invariant 28) was planted with 21 faults, one at a time:
@@ -530,6 +560,16 @@ comparisons of the key a statement certifies, its kid and its point, and each is
 redundant alone: the claims already make the kid the thumbprint of the point, so
 a mismatch in one is a mismatch in the other. Removed together they are caught
 (`TestAStatementCertifyingAnotherKeyIsRefusedAtUse`).
+
+**The key set reload (invariant 29) was planted with 12 faults, one at a time:
+all 12 were caught by a named test.** A reload that merges instead of replacing,
+an unusable file that empties the held set, the lookups returning the copy taken
+at start, the workload issuers skipped, the file not validated as the start
+validates it, the interval compared after the multiplication, a failure reported
+on every pass, an unchanged file reported as changed, a recovery never reported,
+a loop that reads nothing and an interval that is read and ignored; the last two
+only the real-binary test (`TestAProviderThatRotatesItsKeyIsFollowedByARealProcess`)
+sees.
 
 **Ten mutants were planted in the security paths while that code lived here;
 nine were caught immediately and one survived.** Closing it is
@@ -647,9 +687,11 @@ Stated here rather than left to be discovered.
 - **Where a `subject_token` comes from is out of scope.** This accepts one from
   a configured issuer; obtaining it from a customer's own IdP is a deployment
   shape that does not exist yet.
-- **Nothing here has been run against a real IdP**, only against tokens minted
-  by the tests using the same code path. Interoperability with Okta, Entra or
-  Auth0 is untested and unclaimed.
+- **One real provider has been run against, and no other**: Keycloak 26.8.1,
+  RS256 and ES256 realm keys, DPoP-bound and bearer access tokens, a rotated
+  key and a service account's token as a workload assertion
+  (`labs/oidc-keycloak`, `docs/live-oidc-run.md`). Interoperability with Okta,
+  Entra or Auth0 is unclaimed.
 - **No fuzzing**, no load measurement, no TLS. It binds HTTP and warns when the
   bind is routable; terminating TLS is the deployment's job and is not
   demonstrated here. The DPoP `htu` it checks is built from `VOUCHRYX_ISSUER`,
@@ -657,10 +699,11 @@ Stated here rather than left to be discovered.
   host in front of it does not by itself break the check; this is measured
   only through `httptest` requests carrying a literal URL, never through a
   real reverse proxy or TLS terminator.
-- **The hand-off has not been run against a real IdP's bound tokens**, only
-  against credentials the tests bind the same way; and there is no lineage in
-  a token, so revoking a parent by `jti` does not cascade to tokens already
-  exchanged from it (revoke the party by `subject` for that).
+- **The hand-off was run with a real provider's DPoP-bound subject token**
+  (Keycloak, `labs/oidc-keycloak`) as the first hop and with this service's own
+  delegation tokens as the later ones. There is no lineage in a token, so
+  revoking a parent by `jti` does not cascade to tokens already exchanged from
+  it (revoke the party by `subject` for that).
 - **The name is a placeholder** and was never confirmed.
 - **`scripts/the-algorithm-comes-from-the-key.sh` no longer measures anything
   here**, because the file it reads moved. It is removed rather than left
