@@ -685,8 +685,10 @@ Stated here rather than left to be discovered.
   working key is certified. A liveness probe on that path would restart the
   process while Keyryx is down, and the restart would not help.
 - **Where a `subject_token` comes from is out of scope.** This accepts one from
-  a configured issuer; obtaining it from a customer's own IdP is a deployment
-  shape that does not exist yet.
+  a configured issuer. The live run exchanged a real provider's token once the
+  provider wrote a `user://` or `agent://` URI into `sub` (see "What an identity
+  provider has to look like" above); how an opaque `sub` becomes such a URI is
+  not decided here.
 - **One real provider has been run against, and no other**: Keycloak 26.8.1,
   RS256 and ES256 realm keys, DPoP-bound and bearer access tokens, a rotated
   key and a service account's token as a workload assertion
@@ -712,17 +714,19 @@ Stated here rather than left to be discovered.
   `agent-stack-go` now, with its own gate there.
 - **Cross App Access has not been run against a real identity provider.**
   `internal/xaa` and `vouchryx-demo xaa` are exercised against tokens this
-  repository's own tests and demo client mint, the same limit the rest of
-  this section already states for the token-exchange grant; open-source
-  Keycloak issues an ID-JAG only experimentally as of this file's own
-  research, and Okta's Cross App Access needs a tenant and an early-access
-  mail nobody has sent yet.
+  repository's own tests and demo client mint. The live run against Keycloak
+  covered the token-exchange and client_credentials grants and not this one:
+  that Keycloak was not set up to issue an ID-JAG, which open-source Keycloak
+  does only experimentally as of this file's own research, and Okta's Cross
+  App Access needs a tenant and an early-access mail nobody has sent yet.
 - **The jti replay cache is in memory, bounded, and a restart forgets it**,
   the same shape the DPoP replay window already has: for one assertion's
   lifetime after a restart, a captured ID-JAG could be redeemed once more
   than it should be.
-- **No real cluster has presented a workload token here.** The workload path is
-  exercised against RS256 tokens the tests mint in the shape a kubelet writes;
+- **No real cluster has presented a workload token here.** A service account's
+  token from Keycloak has, as an RFC 7523 assertion (`labs/oidc-keycloak`). The
+  workload path is otherwise exercised against RS256 tokens the tests mint in
+  the shape a kubelet writes;
   no k3s or Kubernetes issuer's key set has been configured and no pod has
   asked.
 - **The agent token's door is proven by TokenFuse's tests and one live run,
@@ -765,6 +769,7 @@ Stated here rather than left to be discovered.
       required), by enrolment key or by a cluster's workload token; closed
       while `VOUCHRYX_AGENTS` is unset
 - [x] One-call stop: a ban that holds until lifted and survives a restart
+- [x] Run against a real OpenID provider, Keycloak 26.8.1: `labs/oidc-keycloak`, `docs/live-oidc-run.md`
 - [ ] An upper IdP in the sandbox; the profile mints a demo issuer instead
 - [x] Rooms in the other repos' shared stack diagram, which now includes Vouchryx
 
