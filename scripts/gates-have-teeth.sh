@@ -220,7 +220,7 @@ fault "one signer: the library's name in a comment is not a call" \
   pass ./scripts/one-signer-for-every-token.sh
 
 fault "base images: a FROM loses its digest and falls back to a moving tag" \
-  Dockerfile 'golang@sha256:f20d83a83e18dbd2a4714b8ffd4b30b287b6243962dd75608e86abcc63ba4efc' 'golang:1.27' \
+  Dockerfile 'golang@sha256:08bcb99a38f85a265f9a93d1d3323e2440eec333380f3ea26ee0dec9264bb41c' 'golang:1.27' \
   fail ./scripts/base-images-pinned-by-digest.sh
 
 # And it must not fire on an unrelated Dockerfile edit that leaves both FROM
