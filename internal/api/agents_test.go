@@ -563,7 +563,7 @@ func TestALiftNeedsARevokeKeyAnActorAndAReason(t *testing.T) {
 	if w := a.lift(t, liftTriage, revokeTestKey); w.Code != http.StatusForbidden {
 		t.Errorf("with no revoke keys configured a lift answered %d", w.Code)
 	}
-	a.srv.Cfg.RevokeKeys = []string{revokeTestKey}
+	a.srv.Cfg.RevokeKeys = []config.RevokeKey{{Key: revokeTestKey}}
 	if w := a.lift(t, liftTriage, revokeTestKey); w.Code != http.StatusOK {
 		t.Fatalf("control: a well-formed lift answered %d", w.Code)
 	}

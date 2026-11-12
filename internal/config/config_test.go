@@ -277,10 +277,93 @@ func TestRevokeKeysAreParsedTrimmedAndOptional(t *testing.T) {
 			t.Fatalf("a config with revoke keys was refused: %v", err)
 		}
 		want := []string{"key-one", "key-two", "key-three"}
-		if strings.Join(c.RevokeKeys, ",") != strings.Join(want, ",") {
-			t.Fatalf("got %v, want %v", c.RevokeKeys, want)
+		var got []string
+		for _, k := range c.RevokeKeys {
+			if k.Scoped {
+				t.Fatalf("a bare key came out scoped: %+v", k)
+			}
+			got = append(got, k.Key)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("got %v, want %v", got, want)
 		}
 	})
+}
+
+// A scoped entry is key|rights|prefix; a bare key beside it keeps every right.
+func TestAScopedRevokeKeyIsParsed(t *testing.T) {
+	keys, err := revokeKeys(" bare-key , bridge-key|ban+revoke|user://acme.example/ ,lifter|lift|user://acme.example/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 3 || keys[0].Scoped || keys[0].Key != "bare-key" {
+		t.Fatalf("keys %+v", keys)
+	}
+	if b := keys[1]; !b.Scoped || b.Key != "bridge-key" || b.Rights != RevokeRightBan|RevokeRightRevoke || b.Prefix != "user://acme.example/" {
+		t.Fatalf("bridge key %+v", b)
+	}
+	if l := keys[2]; !l.Scoped || l.Rights != RevokeRightLift {
+		t.Fatalf("lifter %+v", l)
+	}
+}
+
+// A scope that cannot be read exactly refuses the start, and the error names
+// the entry's position, never the key.
+func TestAMalformedScopedRevokeKeyRefusesToStart(t *testing.T) {
+	const secret = "secret-revoke-key-xyz"
+	for name, entry := range map[string]string{
+		"two fields":           secret + "|ban",
+		"four fields":          secret + "|ban|user://acme.example/|more",
+		"no key":               "|ban|user://acme.example/",
+		"an unknown right":     secret + "|steal|user://acme.example/",
+		"a right twice":        secret + "|ban+ban|user://acme.example/",
+		"no rights":            secret + "||user://acme.example/",
+		"a prefix with no end": secret + "|ban|user://acme.example",
+		"a prefix with no URI": secret + "|ban|acme.example/",
+		"a bare scheme":        secret + "|ban|user://",
+		"a space in the scope": secret + "|ban|user://acme example/",
+	} {
+		keys, err := revokeKeys("bare-key," + entry)
+		if err == nil {
+			t.Errorf("%s: accepted as %+v", name, keys)
+			continue
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("%s: the error carries the key: %v", name, err)
+		}
+		if !strings.Contains(err.Error(), "entry 2") {
+			t.Errorf("%s: the error does not name the entry: %v", name, err)
+		}
+	}
+}
+
+// What a key may do: a bare key everything; a scoped key only its rights,
+// only inside its prefix, never by jti.
+func TestRevokeKeyRefusal(t *testing.T) {
+	bare := RevokeKey{Key: "k"}
+	bridge := RevokeKey{Key: "b", Scoped: true, Rights: RevokeRightBan | RevokeRightRevoke, Prefix: "user://acme.example/"}
+	cases := []struct {
+		name    string
+		key     RevokeKey
+		right   RevokeRight
+		subject string
+		byJTI   bool
+		want    string
+	}{
+		{"bare: lift an agent", bare, RevokeRightLift, "agent://acme.example/agents/triage", false, ""},
+		{"bare: revoke by jti", bare, RevokeRightRevoke, "", true, ""},
+		{"scoped: ban a person inside", bridge, RevokeRightBan, "user://acme.example/ana", false, ""},
+		{"scoped: revoke a person inside", bridge, RevokeRightRevoke, "user://acme.example/ana", false, ""},
+		{"scoped: lift", bridge, RevokeRightLift, "user://acme.example/ana", false, "revoke_key_lacks_lift"},
+		{"scoped: an agent", bridge, RevokeRightBan, "agent://acme.example/agents/triage", false, "subject_outside_revoke_key_scope"},
+		{"scoped: a look-alike domain", bridge, RevokeRightBan, "user://acme.example.evil/ana", false, "subject_outside_revoke_key_scope"},
+		{"scoped: by jti", bridge, RevokeRightRevoke, "", true, "revoke_key_scoped_to_subjects"},
+	}
+	for _, c := range cases {
+		if got := c.key.Refusal(c.right, c.subject, c.byJTI); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
 }
 
 func mustFail(t *testing.T) error {

@@ -875,6 +875,44 @@ not a convenience.
     loop in `main` reading nothing, and the interval read and then ignored (the
     last two by the real-binary test). Scenarios: `features/issuer-keys.feature`)*
 
+30. **A revoke key does only what it was given, for the parties it was given.**
+    `@decided 2026-11-12`: a revoke key can be narrowed to what its holder needs,
+    so an automated deprovisioning feed that bans people cannot lift a ban or stop
+    an agent, and a leak of its key costs no more than that. A
+    `VOUCHRYX_REVOKE_KEYS` entry is a bare key, which keeps every right exactly as
+    before, or `key|rights|prefix`: `rights` is one or more of `revoke`, `ban` and
+    `lift` joined by `+`, and `prefix` a URI prefix that contains `://` and ends in
+    `/`, so `user://acme.example/` never covers `user://acme.example.evil/`. A
+    scoped key may do only the rights it names, only for a subject that begins
+    with its prefix, and never revokes by `jti`, because a `jti` names no party the
+    prefix could be checked against (`revoke_key_scoped_to_subjects`,
+    `revoke_key_lacks_<right>`, `subject_outside_revoke_key_scope`, each a 403
+    through `refuse`, so the operator's log names it, invariant 12). Both routes
+    ask the scope before anything is written, and the lift asks it before the ban
+    list, so a key outside its scope does not even learn whether a party is
+    banned. An entry with a `|` that is not exactly that shape refuses the start,
+    naming the entry's position and never its key: a scope misread would hand a
+    key more than it was given. `@claude 2026-11-12`, the syntax, the right names
+    and the refusal names are this repository's reading.
+    *(gate: `scripts/every-revoke-asks-its-scope.sh`, which discovers every
+    function under `internal/api` that calls `.authorizeRevoke(` and requires a
+    `.Refusal(` call on a later line of the same function, outside a comment; five
+    cases in `gates-have-teeth.sh` (one per route, a check left only in a comment,
+    no route left to judge, and a non-fault). Tests: `TestAScopedRevokeKeyIsParsed`,
+    `TestAMalformedScopedRevokeKeyRefusesToStart`, `TestRevokeKeyRefusal`,
+    `TestRevokeKeysAreParsedTrimmedAndOptional` (`internal/config`);
+    `TestAScopedKeyBansAPersonInsideItsPrefix`,
+    `TestAScopedKeyCannotTouchAPartyOutsideItsPrefix`,
+    `TestAScopedKeyWithoutLiftCannotLift`, `TestAScopedKeyCannotRevokeByJTI`,
+    `TestAScopedKeyDoesOnlyTheRightsItNames` (`internal/api`);
+    `TestAScopedRevokeKeyHoldsInTheRealBinary` (`internal/manifest`, the built
+    binary, the variable read from its environment); all red first. Mutants, each
+    caught by a named test: a scoped key always refused, the jti check dropped,
+    the rights check dropped, the prefix check dropped, the revoke route not
+    asking, the lift route not asking, a ban judged as a plain revocation, the
+    lift asking after the ban list, an unknown right accepted, a prefix without
+    its closing `/` accepted. Scenarios: `features/agent-credentials.feature`)*
+
 ## Distribution
 
 Published as a container image, `ghcr.io/taipanbox/vouchryx`, built by

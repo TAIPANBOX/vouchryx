@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-359-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-368-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -123,7 +123,7 @@ switch, different axis, and the second is the one an incident needs.
 | | |
 |---|---|
 | `POST /v1/token` | RFC 8693 exchange (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`). Input: `subject_token` and `actor_token`, plus a `DPoP` header. Output: a short-lived JWT with nested `act` and `cnf.jkt`. Since 2026-09-24, the same route also runs Cross App Access's jwt-bearer grant (`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`, `assertion=<ID-JAG>`, `client_secret_basic`); see "Cross App Access" below. And `grant_type=client_credentials`: an agent's own five-minute credential, for an agent enrolled in `VOUCHRYX_AGENTS`, with a mandatory `DPoP` header; see "An agent's own credential" below. |
-| `POST /v1/revoke` | By `jti` for one token, or by `subject` for every token naming that agent anywhere in its chain: at this door since 2026-09-17, and at the enforcement points from agent-stack-go#61 and tokenfuse#298 on. `actor` and `reason` are required. A `jti` revocation ends one token, not the ones already exchanged from it. With `"ban": true` (a `subject` only) it is also a ban: nothing names that party again until the ban is lifted. |
+| `POST /v1/revoke` | By `jti` for one token, or by `subject` for every token naming that agent anywhere in its chain: at this door since 2026-09-17, and at the enforcement points from agent-stack-go#61 and tokenfuse#298 on. `actor` and `reason` are required. A `jti` revocation ends one token, not the ones already exchanged from it. With `"ban": true` (a `subject` only) it is also a ban: nothing names that party again until the ban is lifted. A scoped key (`key|rights|prefix` in `VOUCHRYX_REVOKE_KEYS`) does only the rights it names, for subjects under its prefix, never by `jti`; anything else is 403 (invariant 30). |
 | `POST /v1/revoke/lift` | Ends a ban. Same keys as `/v1/revoke`; `subject`, `actor` and `reason` required, and the subject must be banned. It never un-revokes: what the party held when it was banned stays revoked. |
 | `GET /v1/revocations` | What enforcement points poll, with no credential. Carries `as_of`, so an empty list and an unreachable service are not the same answer. Each entry carries only what a verifier needs to refuse a token: `jti`, `subject`, `issued_before`, `expires`. It does **not** carry the `actor` or the `reason` of the revocation: those stay in the operator's record (the event stream and the `VOUCHRYX_REVOCATIONS_PATH` store), so the public list does not say who revoked a token or why. |
 | `GET /.well-known/jwks.json` | Public keys, so verification is offline. |
@@ -225,6 +225,12 @@ VOUCHRYX_TTL_SECONDS      default 300, capped at 3600
 VOUCHRYX_EVENTS_PATH      agent-event NDJSON; unset means nothing is recorded
 VOUCHRYX_REVOCATIONS_PATH revocations kept on disk across a restart; unset,
                           a restart forgets them
+VOUCHRYX_REVOKE_KEYS      comma-separated keys for /v1/revoke and its lift; unset,
+                          both refuse every call. A bare key may do everything;
+                          `key|rights|prefix` only the rights named (revoke, ban,
+                          lift, joined by +) for subjects under the prefix, which
+                          ends in / (`user://acme.example/`), and never by jti
+                          (CLAUDE.md invariant 30). A malformed scope aborts the start
 VOUCHRYX_CLIENTS         Cross App Access client table, `client_id|agent://td/path|
                           sha256:<64 hex>` per line; unset closes the jwt-bearer
                           grant (unauthorized_client to every call)
@@ -559,8 +565,16 @@ line, both written every time.
 
 ## Testing
 
-297 tests. Tier T3: these are authorization decisions where a wrong answer is
+306 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
+
+**The revoke key scope (invariant 30) was planted with 10 faults, one at a time:
+all 10 were caught by a named test.** A scoped key always refused, the jti check
+dropped, the rights check dropped, the prefix check dropped, either route not
+asking, a ban judged as a plain revocation, the lift asking after the ban list,
+an unknown right accepted and a prefix without its closing `/` accepted. The jti
+check dropped is caught by `TestRevokeKeyRefusal` alone: through a route the
+prefix check still refuses an empty subject, so the route test stays green.
 
 **The statement check (invariant 28) was planted with 21 faults, one at a time:
 19 were caught by a named test.** The two that survive each remove one of two

@@ -50,6 +50,8 @@ jobs:
         run: ./scripts/every-refusal-reaches-the-operator.sh
       - name: every issuance path checks the ban
         run: ./scripts/every-issuance-checks-the-ban.sh
+      - name: every route a revoke key opens asks its scope
+        run: ./scripts/every-revoke-asks-its-scope.sh
       - name: every subject exchange asks the unbound marker first
         run: ./scripts/every-subject-exchange-asks-the-marker.sh
       - name: every token is signed through internal/signer

@@ -90,12 +90,14 @@ type Config struct {
 	// KeyReload is how often the key set files of Trusted and Workloads are read
 	// again, VOUCHRYX_JWKS_RELOAD_SECONDS; 0 never (invariant 29).
 	KeyReload time.Duration
-	// RevokeKeys are the bearer keys that may call POST /v1/revoke. OPTIONAL,
-	// because making it required would stop every existing bring-up. When it
-	// is empty, /v1/revoke refuses every call rather than accepting one from
-	// whoever can reach the port: the thing that ends an agent's authority
-	// must fail closed, never open.
-	RevokeKeys []string
+	// RevokeKeys are the bearer keys that may call POST /v1/revoke and
+	// POST /v1/revoke/lift. OPTIONAL, because making it required would stop
+	// every existing bring-up. When it is empty, both routes refuse every call
+	// rather than accepting one from whoever can reach the port: the thing that
+	// ends an agent's authority must fail closed, never open. A bare key may do
+	// everything; a scoped entry only the rights it names, for the subjects its
+	// prefix covers (invariant 30).
+	RevokeKeys []RevokeKey
 	// RevocationsPath is where revocations are kept so a restart cannot
 	// un-revoke a token. OPTIONAL, like RevokeKeys, because making it required
 	// would stop every existing bring-up; unset, the service says at startup
@@ -220,9 +222,13 @@ func FromEnv() (Config, error) {
 		Issuer:          os.Getenv("VOUCHRYX_ISSUER"),
 		EventsPath:      os.Getenv("VOUCHRYX_EVENTS_PATH"),
 		TTL:             DefaultTTL,
-		RevokeKeys:      revokeKeys(os.Getenv("VOUCHRYX_REVOKE_KEYS")),
 		RevocationsPath: os.Getenv("VOUCHRYX_REVOCATIONS_PATH"),
 	}
+	keys, err := revokeKeys(os.Getenv("VOUCHRYX_REVOKE_KEYS"))
+	if err != nil {
+		return c, fmt.Errorf("VOUCHRYX_REVOKE_KEYS: %w", err)
+	}
+	c.RevokeKeys = keys
 	if c.Issuer == "" {
 		return c, errors.New("VOUCHRYX_ISSUER is required: it is the `iss` this service puts on every token it mints")
 	}
@@ -554,20 +560,115 @@ func env(name, fallback string) string {
 	return fallback
 }
 
-// revokeKeys parses VOUCHRYX_REVOKE_KEYS: comma-separated bearer keys,
-// whitespace trimmed, empty entries dropped. An empty result (including an
-// unset variable) is what leaves /v1/revoke refusing every call.
-func revokeKeys(spec string) []string {
-	if spec == "" {
-		return nil
-	}
-	var out []string
-	for _, part := range strings.Split(spec, ",") {
-		if t := strings.TrimSpace(part); t != "" {
-			out = append(out, t)
+// RevokeRight is one thing a revoke key may do: revoke (end the tokens issued
+// so far), ban (revoke and refuse every later issuance), lift (end a ban).
+type RevokeRight uint8
+
+const (
+	RevokeRightRevoke RevokeRight = 1 << iota
+	RevokeRightBan
+	RevokeRightLift
+)
+
+var revokeRightNames = []struct {
+	name  string
+	right RevokeRight
+}{{"revoke", RevokeRightRevoke}, {"ban", RevokeRightBan}, {"lift", RevokeRightLift}}
+
+func (r RevokeRight) String() string {
+	for _, n := range revokeRightNames {
+		if n.right == r {
+			return n.name
 		}
 	}
-	return out
+	return "unknown"
+}
+
+// RevokeKey is one VOUCHRYX_REVOKE_KEYS entry (invariant 30). A bare key may
+// do everything: revoke by jti or by subject, ban and lift, for any party. A
+// scoped entry, `key|rights|prefix`, may do only the rights it names, and
+// only for a subject that begins with its prefix; it never revokes by jti,
+// because a jti names no party the prefix could be checked against.
+type RevokeKey struct {
+	Key    string
+	Scoped bool
+	Rights RevokeRight // the rights a scoped key holds; ignored when not Scoped
+	Prefix string      // a scoped key's subjects begin with this; ignored when not Scoped
+}
+
+// Refusal says why this key may not do what a request asks, or "" when it
+// may. right is what the request does, subject the party it names (empty for
+// a jti revocation), byJTI whether it names a token.
+func (k RevokeKey) Refusal(right RevokeRight, subject string, byJTI bool) string {
+	if !k.Scoped {
+		return ""
+	}
+	if byJTI {
+		return "revoke_key_scoped_to_subjects"
+	}
+	if k.Rights&right == 0 {
+		return "revoke_key_lacks_" + right.String()
+	}
+	if !strings.HasPrefix(subject, k.Prefix) {
+		return "subject_outside_revoke_key_scope"
+	}
+	return ""
+}
+
+// revokeKeys parses VOUCHRYX_REVOKE_KEYS: comma-separated entries, whitespace
+// trimmed, empty entries dropped. An entry is a bare key, or `key|rights|prefix`
+// where rights is one or more of revoke, ban, lift joined by "+" and prefix is
+// a URI prefix such as `user://acme.example/` (it must contain "://" and end
+// with "/", so `user://acme.example/` can never also cover
+// `user://acme.example.evil/`). An entry with a "|" that is not exactly that
+// shape refuses the start: a scope misread would hand a key more than it was
+// given. An error names the entry's position, never its key. An empty result
+// (including an unset variable) is what leaves both routes refusing every call.
+func revokeKeys(spec string) ([]RevokeKey, error) {
+	if spec == "" {
+		return nil, nil
+	}
+	var out []RevokeKey
+	for i, part := range strings.Split(spec, ",") {
+		t := strings.TrimSpace(part)
+		if t == "" {
+			continue
+		}
+		if !strings.Contains(t, "|") {
+			out = append(out, RevokeKey{Key: t})
+			continue
+		}
+		fields := strings.Split(t, "|")
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("entry %d has %d fields; a scoped key is key|rights|prefix", i+1, len(fields))
+		}
+		key, rights, prefix := strings.TrimSpace(fields[0]), strings.TrimSpace(fields[1]), strings.TrimSpace(fields[2])
+		if key == "" {
+			return nil, fmt.Errorf("entry %d names no key", i+1)
+		}
+		var have RevokeRight
+		for _, name := range strings.Split(rights, "+") {
+			var r RevokeRight
+			for _, n := range revokeRightNames {
+				if n.name == name {
+					r = n.right
+				}
+			}
+			if r == 0 {
+				return nil, fmt.Errorf("entry %d names the right %q; the rights are revoke, ban and lift", i+1, name)
+			}
+			if have&r != 0 {
+				return nil, fmt.Errorf("entry %d names the right %q twice", i+1, name)
+			}
+			have |= r
+		}
+		scheme, rest, ok := strings.Cut(prefix, "://")
+		if !ok || scheme == "" || rest == "" || !strings.HasSuffix(prefix, "/") || strings.ContainsAny(prefix, " \t") {
+			return nil, fmt.Errorf("entry %d has the prefix %q; it must be scheme://host/ (ending in /)", i+1, prefix)
+		}
+		out = append(out, RevokeKey{Key: key, Scoped: true, Rights: have, Prefix: prefix})
+	}
+	return out, nil
 }
 
 func splitLines(s string) []string {

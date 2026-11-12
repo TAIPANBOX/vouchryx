@@ -590,7 +590,7 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusForbidden, "access_denied", "revocation_disabled", nil)
 		return
 	}
-	keyActor, ok := s.authorizeRevoke(r)
+	keyActor, key, ok := s.authorizeRevoke(r)
 	if !ok {
 		// The SAME answer for "no header" and "wrong key": a refusal that told
 		// the two apart would let a caller learn something about which keys
@@ -622,6 +622,16 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := banRefusal(body); err != nil {
 		refuse(w, http.StatusBadRequest, "invalid_request", "ban_names_a_subject_only", map[string]any{"detail": err.Error()})
+		return
+	}
+	// A scoped key does only what it names, for the subjects its prefix covers,
+	// and never by jti (invariant 30). Asked before anything is written.
+	right := config.RevokeRightRevoke
+	if body.Ban {
+		right = config.RevokeRightBan
+	}
+	if why := key.Refusal(right, body.Subject, body.JTI != ""); why != "" {
+		refuse(w, http.StatusForbidden, "access_denied", why, map[string]any{"subject": body.Subject, "key": keyActor})
 		return
 	}
 	now := s.now()
@@ -708,21 +718,22 @@ func (s *Server) revokeHandler(w http.ResponseWriter, r *http.Request) {
 // On a match, the returned actor is a fingerprint of the key, never the key
 // itself: "key:" plus the first 12 hex characters of sha256(key), the same
 // shape tokenfuse's `key_actor` uses, so the record can name the credential
-// that acted without ever holding it.
-func (s *Server) authorizeRevoke(r *http.Request) (keyActor string, ok bool) {
+// that acted without ever holding it. The matched entry comes back too: the
+// caller asks its Refusal before acting (invariant 30).
+func (s *Server) authorizeRevoke(r *http.Request) (keyActor string, key config.RevokeKey, ok bool) {
 	presented, hasHeader := bearerToken(r)
 	if !hasHeader {
-		return "", false
+		return "", config.RevokeKey{}, false
 	}
-	for _, key := range s.Cfg.RevokeKeys {
-		if len(key) != len(presented) {
+	for _, k := range s.Cfg.RevokeKeys {
+		if len(k.Key) != len(presented) {
 			continue
 		}
-		if subtle.ConstantTimeCompare([]byte(key), []byte(presented)) == 1 {
-			return "key:" + keyFingerprint(key), true
+		if subtle.ConstantTimeCompare([]byte(k.Key), []byte(presented)) == 1 {
+			return "key:" + keyFingerprint(k.Key), k, true
 		}
 	}
-	return "", false
+	return "", config.RevokeKey{}, false
 }
 
 func bearerToken(r *http.Request) (token string, ok bool) {

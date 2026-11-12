@@ -211,3 +211,39 @@ Feature: An agent's own credential, and stopping an agent with one action
     Given a stored ban naming a token, or with no moment, or a lift with no reason or no subject
     When the store is opened
     Then it refuses to open
+
+  # @test:TestAScopedKeyCannotTouchAPartyOutsideItsPrefix
+  Scenario: A scoped revoke key reaches only the parties its prefix covers
+    Given a revoke key scoped to ban and revoke people under user://acme.example/
+    When it is used to ban or revoke an agent, or a person under a look-alike domain
+    Then each is refused, and the bare key beside it still bans the agent
+
+  # @test:TestAScopedKeyWithoutLiftCannotLift
+  Scenario: A scoped revoke key cannot end a ban it was not given the right to end
+    Given a person banned with a key that may ban but not lift, and an agent banned with the bare key
+    When that key lifts the person, or a key that may lift only people lifts the agent or a person outside its prefix
+    Then every one is refused before the ban list is asked, the bans stand, and the lifter frees the person it covers
+
+  # @test:TestAScopedKeyCannotRevokeByJTI
+  Scenario: A scoped revoke key never revokes by token
+    Given a revoke key scoped to people
+    When it revokes by jti, which names no party its prefix could be checked against
+    Then it is refused, and the bare key's revocation by jti goes through
+
+  # @test:TestAScopedKeyDoesOnlyTheRightsItNames
+  Scenario: A scoped revoke key does only the rights it names
+    Given a key that may only ban and a key that may only revoke
+    When each is used for the other's right
+    Then each is refused, and each succeeds at its own
+
+  # @test:TestAMalformedScopedRevokeKeyRefusesToStart
+  Scenario: A revoke key scope the service cannot read exactly stops the start
+    Given a scoped entry with the wrong number of fields, no key, an unknown or repeated right, or a prefix that is not scheme://host/
+    When the configuration is read
+    Then it is refused, naming the entry's position and never its key
+
+  # @test:TestAScopedRevokeKeyHoldsInTheRealBinary
+  Scenario: A scoped revoke key read from the environment holds in the built binary
+    Given the binary started with a bare key and a key scoped to ban people
+    When the scoped key bans an agent, bans a person, and lifts that person
+    Then the agent and the lift are refused, the person is banned, the bare key lifts, and a malformed scope stops the start without the key in the message
