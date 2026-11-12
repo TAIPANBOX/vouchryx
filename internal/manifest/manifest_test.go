@@ -727,6 +727,88 @@ func TestAnAgentIsStoppedAndLetBackAcrossARealRestart(t *testing.T) {
 	}
 }
 
+// A scoped revoke key read from the environment by the built binary does only
+// what it names (invariant 30): it bans a person inside its prefix, is refused
+// an agent and a lift, and a scope the binary cannot read exactly stops the
+// start without the key in the message.
+func TestAScopedRevokeKeyHoldsInTheRealBinary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts processes")
+	}
+	_, r := load(t)
+	bin := filepath.Join(t.TempDir(), "vouchryx")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/vouchryx")
+	build.Dir = r
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building: %v\n%s", err, out)
+	}
+	const agent, enrolment = "agent://acme.example/agents/triage", "manifest-enrolment-key-0123456789"
+	const fullKey, bridgeKey = "manifest-revoke-key-0123456789", "manifest-bridge-key-0123456789"
+	sum := sha256.Sum256([]byte(enrolment))
+	full := workingEnvironment(t, r)
+	delete(full, "VOUCHRYX_TRUSTED_ISSUERS")
+	full["VOUCHRYX_AGENTS"] = agent + "|agents|default|sha256:" + hex.EncodeToString(sum[:])
+	full["VOUCHRYX_REVOKE_KEYS"] = fullKey + "," + bridgeKey + "|ban+revoke|user://acme.example/"
+	envOf := func(m map[string]string) []string {
+		var env []string
+		for k, v := range m {
+			env = append(env, k+"="+v)
+		}
+		return env
+	}
+	addr := full["VOUCHRYX_ADDR"]
+	cmd := exec.Command(bin)
+	cmd.Env = envOf(full)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	if !waitFor(addr, 10*time.Second) {
+		t.Fatalf("the service never listened on %s", addr)
+	}
+	post := func(path, key, body string) int {
+		req, _ := http.NewRequest("POST", "http://"+addr+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	ban := func(subject string) string {
+		return `{"subject":"` + subject + `","ban":true,"actor":"agent://acme.example/idp-bridge","reason":"disabled at the IdP"}`
+	}
+	if got := post("/v1/revoke", bridgeKey, ban(agent)); got != http.StatusForbidden {
+		t.Fatalf("the bridge key banning an agent answered %d, want 403", got)
+	}
+	if got := post("/v1/revoke", bridgeKey, ban("user://acme.example/ana")); got != http.StatusOK {
+		t.Fatalf("the bridge key banning a person answered %d", got)
+	}
+	lift := `{"subject":"user://acme.example/ana","actor":"user://acme.example/op","reason":"back"}`
+	if got := post("/v1/revoke/lift", bridgeKey, lift); got != http.StatusForbidden {
+		t.Fatalf("the bridge key's lift answered %d, want 403", got)
+	}
+	if got := post("/v1/revoke/lift", fullKey, lift); got != http.StatusOK {
+		t.Fatalf("control: the bare key's lift answered %d", got)
+	}
+
+	bad := map[string]string{}
+	for k, v := range full {
+		bad[k] = v
+	}
+	bad["VOUCHRYX_REVOKE_KEYS"] = fullKey + "," + bridgeKey + "|ban+steal|user://acme.example/"
+	refused := exec.Command(bin)
+	refused.Env = envOf(bad)
+	out, err := refused.CombinedOutput()
+	if err == nil {
+		t.Fatalf("a malformed scope started the service: %s", out)
+	}
+	if !strings.Contains(string(out), "VOUCHRYX_REVOKE_KEYS") || strings.Contains(string(out), bridgeKey) {
+		t.Fatalf("the refusal must name the variable and never the key: %s", out)
+	}
+}
+
 // A provider rotates its signing key while the service runs. The key set a
 // trusted issuer publishes is a file this service reads, and until it re-read
 // that file a token signed with the new key was refused for as long as the

@@ -12,6 +12,7 @@ import (
 
 	"github.com/TAIPANBOX/agent-stack-go/v2/delegation"
 	"github.com/TAIPANBOX/vouchryx/internal/agents"
+	"github.com/TAIPANBOX/vouchryx/internal/config"
 	"github.com/TAIPANBOX/vouchryx/internal/revoke"
 )
 
@@ -296,7 +297,7 @@ func (s *Server) liftHandler(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusForbidden, "access_denied", "revocation_disabled", nil)
 		return
 	}
-	keyActor, ok := s.authorizeRevoke(r)
+	keyActor, key, ok := s.authorizeRevoke(r)
 	if !ok {
 		refuse(w, http.StatusUnauthorized, "invalid_client", "revocation_not_authorised", nil)
 		return
@@ -312,6 +313,13 @@ func (s *Server) liftHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Subject == "" || body.Actor == "" || body.Reason == "" {
 		refuse(w, http.StatusBadRequest, "invalid_request", "lift_names_no_subject_actor_or_reason", nil)
+		return
+	}
+	// A scoped key lifts only if it holds the right, and only within its prefix
+	// (invariant 30); asked before the ban list, so such a key does not even
+	// learn whether a party outside its scope is banned.
+	if why := key.Refusal(config.RevokeRightLift, body.Subject, false); why != "" {
+		refuse(w, http.StatusForbidden, "access_denied", why, map[string]any{"subject": body.Subject, "key": keyActor})
 		return
 	}
 	if _, banned := s.Revs.Banned([]string{body.Subject}); !banned {

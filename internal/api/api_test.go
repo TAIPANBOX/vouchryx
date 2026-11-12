@@ -74,7 +74,7 @@ func newStand(t *testing.T) *stand {
 					// that sends them. The tests of the marker itself set it explicitly.
 					Unbound: true,
 				}},
-				RevokeKeys: []string{revokeTestKey},
+				RevokeKeys: []config.RevokeKey{{Key: revokeTestKey}},
 			},
 			Revs:   revoke.New(),
 			Proofs: delegation.NewVerifier(),
@@ -990,7 +990,7 @@ func TestARevocationTTLOverflowIsRefusedRatherThanSilentlyIneffective(t *testing
 func TestASecondConfiguredKeyAlsoAuthorizesARevocation(t *testing.T) {
 	s := newStand(t)
 	const second = "a-second-rotated-in-key"
-	s.srv.Cfg.RevokeKeys = []string{revokeTestKey, second}
+	s.srv.Cfg.RevokeKeys = []config.RevokeKey{{Key: revokeTestKey}, {Key: second}}
 
 	w := s.revoke(t, wellFormedRevocation, second)
 	if w.Code != http.StatusOK {

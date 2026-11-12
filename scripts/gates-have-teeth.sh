@@ -179,6 +179,29 @@ fault "issuance: an unrelated comment beside a ban check" \
   internal/api/agents.go 'if e, banned := s.Revs.Banned([]string{agent.ID}); banned {' 'if e, banned := s.Revs.Banned([]string{agent.ID}); banned { // asked' \
   pass ./scripts/every-issuance-checks-the-ban.sh
 
+# A scoped revoke key is narrower only if every route that accepts it asks its
+# scope (invariant 30): one case per route, a check left only in a comment, no
+# route left to judge, and a non-fault.
+fault "revoke scope: the revoke route stops asking the key's scope" \
+  internal/api/api.go 'if why := key.Refusal(right, body.Subject, body.JTI != ""); why != "" {' 'if why := ""; why != "" {' \
+  fail ./scripts/every-revoke-asks-its-scope.sh
+
+fault "revoke scope: the lift route stops asking the key's scope" \
+  internal/api/agents.go 'if why := key.Refusal(config.RevokeRightLift, body.Subject, false); why != "" {' 'if why := ""; why != "" {' \
+  fail ./scripts/every-revoke-asks-its-scope.sh
+
+fault "revoke scope: the scope check survives only as a comment" \
+  internal/api/agents.go 'if why := key.Refusal(config.RevokeRightLift, body.Subject, false); why != "" {' 'if why := ""; why != "" { // key.Refusal(x)' \
+  fail ./scripts/every-revoke-asks-its-scope.sh
+
+fault_all_multi "revoke scope: no route accepts a revoke key any more" \
+  "internal/api/api.go internal/api/agents.go" 's.authorizeRevoke(' 's.noRevokeKeyRoute(' \
+  fail ./scripts/every-revoke-asks-its-scope.sh
+
+fault "revoke scope: an unrelated comment beside a scope check" \
+  internal/api/api.go 'if why := key.Refusal(right, body.Subject, body.JTI != ""); why != "" {' 'if why := key.Refusal(right, body.Subject, body.JTI != ""); why != "" { // asked' \
+  pass ./scripts/every-revoke-asks-its-scope.sh
+
 # An unbound subject token is exchanged only when its issuer is marked
 # (invariant 26). The exchange must ask the marker before it signs.
 fault "unbound: the exchange stops asking the marker" \
