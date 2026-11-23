@@ -282,8 +282,9 @@ trusted-issuer line works as described, with three facts an operator needs:
   tokens.** Keycloak 26.8.1 binds access tokens to the client's key when the
   client asks for it, and the thumbprint it writes is the one this service
   computes.
-- **The agent's token, the `actor_token`, must carry a `cnf.jkt`, and on a
-  first hop the `DPoP` proof must be signed by that key.** An actor token with
+- **The agent's token, the `actor_token`, must carry a `cnf.jkt`, and when the
+  subject token carries no key the `DPoP` proof must be signed by the agent's
+  key.** An actor token with
   no key is refused (`actor_credential_unbound` in the log), whatever its
   issuer's marker says: there is nobody to check the presenter against, so a
   captured copy would exchange for whoever held any key. An agent that has no
@@ -656,6 +657,12 @@ staticcheck ./...
 ## NOT PROVEN
 
 Stated here rather than left to be discovered.
+
+- **A subject token from an issuer marked `|unbound` is still a bearer token.**
+  Any agent holding its own bound credential can exchange a captured copy; the
+  marker is the operator accepting that for that issuer (CLAUDE.md invariant
+  26). And a captured actor token with no key, though it issues nothing, still
+  lets its presenter file `delegation_denied` events under that agent.
 
 - **The revocation store is a local file**: no replication, no cross-instance
   sharing, compacted only at start (a long-running process under heavy

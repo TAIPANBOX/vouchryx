@@ -249,8 +249,8 @@ not a convenience.
     (`actor_token_is_a_delegation`). Until 2026-09-17 `verifyInput` compared
     nothing with the proof, so a lifted bound token presented with a fresh
     proof from another key came back bound to the thief's key. The response
-    shape is unchanged for unbound inputs, which is every deployment today
-    (invariant 15 adds a `scope` claim a subject held, and `delegation_issued`
+    shape was unchanged for unbound inputs, which was every deployment then
+    (invariant 31 later refused an unbound actor credential; invariant 15 adds a `scope` claim a subject held, and `delegation_issued`
     gains `cnf_source`, which SPEC 6.1 tells consumers to ignore when unknown).
     A refused hand-off attempt with a lifted token is filed under the HOLDER
     named in the token's chain, the victim, because that is whose history it
@@ -927,15 +927,18 @@ not a convenience.
     agent was a bearer credential: whoever captured it exchanged it with any key
     they held and came away with a delegation in that agent's name, bound to their
     own key. Now the key always comes from the actor's verified credential
-    (`cnf.jkt`): on a hand-off it is the delegate's (invariant 13), and on a first
-    hop the presenter is the actor and the proof must be signed by that key
-    (`actor_key_mismatch` otherwise). A credential with no key is refused with
+    (`cnf.jkt`). When the subject token carries a key, its holder presents and the
+    result binds to the actor's key, which may be another party's (the hand-off,
+    invariant 13). When the subject token carries none, the presenter is the actor
+    and the proof must be signed by the actor's key (`actor_key_mismatch`
+    otherwise). A credential with no key is refused with
     `invalid_grant`, reason `actor_credential_unbound`, through `refuse` to the
     operator's log (invariant 11) and filed under the actor's `sub` when it is an
     `agent://`, because it is that agent's history somebody tried to write into.
     This service's own agent credential (invariant 23) is always bound, so an agent
-    whose provider issues no DPoP-bound token uses that. `delegation_issued` keeps
-    `cnf_source`, now always `actor_token`. `@claude 2026-11-23`: reusing the
+    whose provider issues no DPoP-bound token uses that. The exchange's
+    `delegation_issued` keeps `cnf_source`, now always `actor_token` there (the
+    agent and Cross App Access grants still write `proof`). `@claude 2026-11-23`: reusing the
     hand-off's reason name rather than a new one, and filing under the actor, are
     this repository's reading.
     *(tests: `TestACapturedUnboundAgentCredentialIsNotExchangedOnAFirstHop`,

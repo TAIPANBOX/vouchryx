@@ -77,9 +77,14 @@ func TestTheUnboundMarkerNeverAdmitsAnUnboundActorCredential(t *testing.T) {
 			s.boundInput(t, "user://acme/alice", s.holder, nil), s.input(t, "agent://acme/triage", nil)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			buf := captureLog(t)
 			rec, _ := s.exchange(t, c.subject, c.actor, s.proof(t, "mk-"+c.name))
 			if rec.Code == http.StatusOK {
 				t.Fatalf("an actor credential with no key was exchanged: %s", rec.Body.String())
+			}
+			// Refused for the reason under test, not for some earlier one.
+			if !strings.Contains(buf.String(), "actor_credential_unbound") {
+				t.Fatalf("refused, but the log does not say the actor credential named no key:\n%s", buf.String())
 			}
 		})
 	}
@@ -117,10 +122,14 @@ func TestEveryIssuedDelegationIsBoundToTheKeyItsAgentCredentialNames(t *testing.
 					presenter = agent
 				}
 			}
+			buf := captureLog(t)
 			rec, body := s.exchange(t, subject, actor, s.proofFrom(t, presenter, "sw-"+c.name))
 			if !c.actorBound {
 				if rec.Code == http.StatusOK {
 					t.Fatalf("issued with an agent credential that names no key: %s", rec.Body.String())
+				}
+				if !strings.Contains(buf.String(), "actor_credential_unbound") {
+					t.Fatalf("refused, but the log does not say the actor credential named no key:\n%s", buf.String())
 				}
 				return
 			}
