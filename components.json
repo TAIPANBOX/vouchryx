@@ -44,6 +44,7 @@
           "VOUCHRYX_AGENTS": { "required": false },
           "VOUCHRYX_WORKLOAD_ISSUERS": { "required": false },
           "VOUCHRYX_JWKS_RELOAD_SECONDS": { "required": false },
+          "VOUCHRYX_SIGNING_KEYS_PUBLISHED": { "required": false },
           "VOUCHRYX_SIGNER": { "required": false },
           "VOUCHRYX_KEYRYX_URL": { "required": false },
           "VOUCHRYX_KEYRYX_CONSUMER": { "required": false },

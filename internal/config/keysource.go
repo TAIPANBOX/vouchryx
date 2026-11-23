@@ -48,6 +48,8 @@ func keyReloadFromEnv(raw string, set bool) (time.Duration, error) {
 // a file that cannot be used never replaces it (invariant 29).
 type keySource struct {
 	name, iss, path string
+	// load reads and checks the file; nil reads it as an issuer's key set.
+	load func() ([]byte, delegation.Set, error)
 
 	mu      sync.RWMutex
 	raw     []byte
@@ -86,9 +88,14 @@ type KeyReload struct {
 // reload reads the file again. Whatever is wrong with it, the held set stays.
 func (s *keySource) reload() (KeyReload, bool) {
 	r := KeyReload{Name: s.name, Iss: s.iss, Path: s.path}
-	raw, err := os.ReadFile(s.path) // #nosec G304 -- operator-supplied path from the environment, the same file read at startup
-	var set delegation.Set
-	if err != nil {
+	var (
+		raw []byte
+		set delegation.Set
+		err error
+	)
+	if s.load != nil {
+		raw, set, err = s.load()
+	} else if raw, err = os.ReadFile(s.path); err != nil { // #nosec G304 -- operator-supplied path from the environment, the same file read at startup
 		err = fmt.Errorf("%s: reading the JWKS for %s at %s: %w", s.name, s.iss, s.path, err)
 	} else {
 		set, err = parseKeySet(s.iss, s.path, raw)
@@ -132,6 +139,11 @@ func (c Config) ReloadKeys() []KeyReload {
 			if r, ok := i.src.reload(); ok {
 				out = append(out, r)
 			}
+		}
+	}
+	if c.published != nil {
+		if r, ok := c.published.reload(); ok {
+			out = append(out, r)
 		}
 	}
 	return out

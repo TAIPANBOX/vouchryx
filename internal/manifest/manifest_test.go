@@ -35,6 +35,7 @@ import (
 
 	"github.com/TAIPANBOX/agent-stack-go/v2/delegation"
 	"github.com/TAIPANBOX/vouchryx/internal/demo"
+	"github.com/TAIPANBOX/vouchryx/internal/keyryxtest"
 )
 
 type manifest struct {
@@ -940,5 +941,142 @@ func TestAProviderThatRotatesItsKeyIsFollowedByARealProcess(t *testing.T) {
 	}
 	if err := exchange(newKey, "t2"); err != nil {
 		t.Fatalf("the remaining key stopped working: %v", err)
+	}
+}
+
+// VOUCHRYX_SIGNING_KEYS_PUBLISHED is read by the built binary: the keys it names
+// are served beside the file key with a cache lifetime, a rewrite of the file is
+// followed without a restart, and the setting refuses the start in keyryx mode
+// (CLAUDE.md invariant 32).
+func TestThePublishedKeysFileIsReadByTheRealBinary(t *testing.T) {
+	envOf := func(m map[string]string) []string {
+		var out []string
+		for k, v := range m {
+			out = append(out, k+"="+v)
+		}
+		return out
+	}
+	if testing.Short() {
+		t.Skip("starts processes")
+	}
+	_, r := load(t)
+	bin := filepath.Join(t.TempDir(), "vouchryx")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/vouchryx")
+	build.Dir = r
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building: %v\n%s", err, out)
+	}
+	full := workingEnvironment(t, r)
+	addr := full["VOUCHRYX_ADDR"]
+	published := filepath.Join(t.TempDir(), "published.jwks.json")
+	publish := func(keys ...*ecdsa.PrivateKey) string {
+		set := delegation.Set{Keys: []delegation.JWK{}}
+		var kid string
+		for _, k := range keys {
+			j := delegation.FromPublic(&k.PublicKey, "")
+			var err error
+			if kid, err = delegation.Thumbprint(j); err != nil {
+				t.Fatal(err)
+			}
+			j.Kid = kid
+			set.Keys = append(set.Keys, j)
+		}
+		body, err := json.Marshal(set)
+		if err != nil {
+			t.Fatal(err)
+		}
+		beside := published + ".new"
+		if err := os.WriteFile(beside, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(beside, published); err != nil {
+			t.Fatal(err)
+		}
+		return kid
+	}
+	next, err := demo.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev, err := demo.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextKid := publish(next)
+	full["VOUCHRYX_SIGNING_KEYS_PUBLISHED"] = published
+	full["VOUCHRYX_JWKS_RELOAD_SECONDS"] = "1"
+
+	cmd := exec.Command(bin)
+	cmd.Env = envOf(full)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	if !waitFor(addr, 10*time.Second) {
+		t.Fatalf("the service never listened on %s", addr)
+	}
+	served := func() ([]string, string) {
+		resp, err := http.Get("http://" + addr + "/.well-known/jwks.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var set delegation.Set
+		if err := json.NewDecoder(resp.Body).Decode(&set); err != nil {
+			t.Fatal(err)
+		}
+		var kids []string
+		for _, k := range set.Keys {
+			kids = append(kids, k.Kid)
+		}
+		return kids, resp.Header.Get("Cache-Control")
+	}
+	kids, cache := served()
+	if len(kids) != 2 || kids[1] != nextKid {
+		t.Fatalf("served kids %v, want the file key and the published next key %s", kids, nextKid)
+	}
+	if cache != "public, max-age=60" {
+		t.Fatalf("the key set answered Cache-Control %q", cache)
+	}
+	active := kids[0]
+
+	prevKid := publish(prev)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		kids, _ = served()
+		if len(kids) == 2 && kids[0] == active && kids[1] == prevKid {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ten seconds after the published file changed the binary serves %v, want %s and %s", kids, active, prevKid)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// The setting is file mode's: with the keyryx signer the start is refused.
+	bad := map[string]string{}
+	for k, v := range full {
+		bad[k] = v
+	}
+	bad["VOUCHRYX_SIGNER"] = "keyryx"
+	bad["VOUCHRYX_KEYRYX_URL"] = "http://127.0.0.1:1"
+	bad["VOUCHRYX_KEYRYX_CONSUMER"] = "vouchryx"
+	bad["VOUCHRYX_KEYRYX_CREDENTIAL_FILE"] = published
+	bad["VOUCHRYX_KEYRYX_ROOT_PIN"] = keyryxtest.NewRoot(t).Pin()
+	port, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad["VOUCHRYX_ADDR"] = fmt.Sprintf("127.0.0.1:%d", port)
+	// Bounded: a binary that accepted the setting would come up and wait for
+	// Keyryx instead of exiting, and this test must fail rather than hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	refused := exec.CommandContext(ctx, bin)
+	refused.Env = envOf(bad)
+	out, err := refused.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.Contains(string(out), "VOUCHRYX_SIGNING_KEYS_PUBLISHED") {
+		t.Fatalf("the published key set with the keyryx signer: err %v, output %s; want exit 2 naming the variable", err, out)
 	}
 }

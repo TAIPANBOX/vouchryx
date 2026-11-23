@@ -86,18 +86,28 @@ func JWS(s Signer, typ string, claims map[string]any) (string, error) {
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
-// File signs with the key in VOUCHRYX_SIGNING_KEY.
+// File signs with the key in VOUCHRYX_SIGNING_KEY, and publishes beside it the
+// public keys VOUCHRYX_SIGNING_KEYS_PUBLISHED names, which it never signs with
+// (CLAUDE.md invariant 32).
 type File struct {
-	key *ecdsa.PrivateKey
-	kid string
+	key       *ecdsa.PrivateKey
+	kid       string
+	published func() []delegation.JWK
 }
 
-// NewFile returns the signer for a P-256 key and its kid.
+// NewFile returns the signer for a P-256 key and its kid, publishing nothing else.
 func NewFile(key *ecdsa.PrivateKey, kid string) (*File, error) {
+	return NewFilePublishing(key, kid, nil)
+}
+
+// NewFilePublishing is NewFile with the keys published beside the file key:
+// published is asked on every read of the key set, so a reload of its file is
+// served at once. Nil publishes nothing else.
+func NewFilePublishing(key *ecdsa.PrivateKey, kid string, published func() []delegation.JWK) (*File, error) {
 	if key.Curve != elliptic.P256() {
 		return nil, errors.New("signer: the file key is not P-256")
 	}
-	return &File{key: key, kid: kid}, nil
+	return &File{key: key, kid: kid, published: published}, nil
 }
 
 // Sign signs SHA-256 of the bytes build returns with the file key.
@@ -111,9 +121,18 @@ func (f *File) Sign(build func(kid string) []byte) (string, []byte, error) {
 	return f.kid, append(pad(r, 32), pad(s, 32)...), nil
 }
 
-// Public is the file key's public half, as a set of one.
+// Public is the file key's public half first, then each published key once: a
+// published key with the file key's kid is the file key, and is not served twice.
 func (f *File) Public() delegation.Set {
-	return delegation.Set{Keys: []delegation.JWK{delegation.FromPublic(&f.key.PublicKey, f.kid)}}
+	keys := []delegation.JWK{delegation.FromPublic(&f.key.PublicKey, f.kid)}
+	if f.published != nil {
+		for _, k := range f.published() {
+			if !hasKid(keys, k.Kid) {
+				keys = append(keys, k)
+			}
+		}
+	}
+	return delegation.Set{Keys: keys}
 }
 
 // Ready is always nil: the file key is loaded at start or the process does not start.

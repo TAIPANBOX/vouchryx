@@ -131,6 +131,10 @@ type Config struct {
 	// this service, never a subject or an actor to exchange, and an issuer in
 	// one table gains nothing in the other.
 	Workloads []Issuer
+	// published is VOUCHRYX_SIGNING_KEYS_PUBLISHED: the public keys served beside
+	// the file key and never used to sign (invariant 32). Read through
+	// PublishedKeys, which returns the set the file held at its last good read.
+	published *keySource
 }
 
 // KeyryxConfig is how a service with VOUCHRYX_SIGNER=keyryx reaches Keyryx.
@@ -280,6 +284,10 @@ func FromEnv() (Config, error) {
 		}
 	}
 
+	if c.published, err = publishedFromEnv(c.Signer, c.Issuer); err != nil {
+		return c, err
+	}
+
 	// VOUCHRYX_AGENTS first, because whether VOUCHRYX_TRUSTED_ISSUERS is
 	// required depends on it (invariant 23).
 	if spec := os.Getenv("VOUCHRYX_AGENTS"); spec != "" {
@@ -423,7 +431,9 @@ func (c Config) FindIssuer(iss string) (Issuer, bool) {
 	return Issuer{}, false
 }
 
-// PublicSet is what `/.well-known/jwks.json` serves.
+// PublicSet is the file key's public half alone. `/.well-known/jwks.json`
+// serves the signer's set, which in file mode adds the published keys
+// (invariant 32) and in keyryx mode is Keyryx's.
 func (c Config) PublicSet() delegation.Set {
 	return delegation.Set{Keys: []delegation.JWK{delegation.FromPublic(&c.SigningKey.PublicKey, c.KeyID)}}
 }
