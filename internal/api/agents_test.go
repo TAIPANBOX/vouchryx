@@ -674,7 +674,7 @@ func TestAnExchangeDoesNotCopyUnitFromAForeignActorToken(t *testing.T) {
 		t.Fatalf("control: own agent token, unit = %v", c["unit"])
 	}
 	w, body := a.exchange(t, a.input(t, "user://acme.example/alice", nil),
-		a.input(t, "agent://acme.example/agents/triage", map[string]any{"unit": "treasury", "org": "bank"}), a.proof(t, "f-2"))
+		a.actor(t, "agent://acme.example/agents/triage", map[string]any{"unit": "treasury", "org": "bank"}), a.proof(t, "f-2"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("the exchange answered %d", w.Code)
 	}
@@ -704,7 +704,7 @@ func TestAnExchangeWithARevokedActorTokenIssuesNothing(t *testing.T) {
 
 func TestAnExchangeNamingABannedPartyIssuesNothing(t *testing.T) {
 	a := wallAgentStand(t)
-	if w, _ := a.exchange(t, a.input(t, "user://acme.example/alice", nil), a.input(t, triage, nil), a.proof(t, "bp-0")); w.Code != http.StatusOK {
+	if w, _ := a.exchange(t, a.input(t, "user://acme.example/alice", nil), a.actor(t, triage, nil), a.proof(t, "bp-0")); w.Code != http.StatusOK {
 		t.Fatalf("control: %d", w.Code)
 	}
 	if w := a.ban(t, triage); w.Code != http.StatusOK {
@@ -715,7 +715,7 @@ func TestAnExchangeNamingABannedPartyIssuesNothing(t *testing.T) {
 	a.srv.Now = func() time.Time { return moved }
 	// Minted after the ban, so the ban's revocation half does not cover it:
 	// only the ban itself can refuse this.
-	w, body := a.exchange(t, a.input(t, "user://acme.example/alice", nil), a.input(t, triage, nil), a.proof(t, "bp-1"))
+	w, body := a.exchange(t, a.input(t, "user://acme.example/alice", nil), a.actor(t, triage, nil), a.proof(t, "bp-1"))
 	if w.Code != http.StatusBadRequest || body["access_token"] != nil {
 		t.Fatalf("a banned actor was issued a delegation: %d %v", w.Code, body)
 	}
@@ -725,7 +725,7 @@ func TestAnExchangeNamingABannedPartyIssuesNothing(t *testing.T) {
 	a.now = a.now.Add(time.Second)
 	moved2 := a.now
 	a.srv.Now = func() time.Time { return moved2 }
-	w, _ = a.exchange(t, a.input(t, "user://acme.example/alice", nil), a.input(t, "agent://acme.example/agents/other", nil), a.proof(t, "bp-2"))
+	w, _ = a.exchange(t, a.input(t, "user://acme.example/alice", nil), a.actor(t, "agent://acme.example/agents/other", nil), a.proof(t, "bp-2"))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("a banned subject was delegated from: %d", w.Code)
 	}

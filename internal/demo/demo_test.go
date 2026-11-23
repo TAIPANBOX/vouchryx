@@ -131,7 +131,7 @@ func (s *stand) tokens(t *testing.T, sub, actor string) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	act, err := demo.InputToken(s.idp, idpKid, idpIss, audience, actor, s.now, time.Hour)
+	act, err := demo.ActorToken(s.idp, idpKid, idpIss, audience, actor, &s.holder.PublicKey, s.now, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

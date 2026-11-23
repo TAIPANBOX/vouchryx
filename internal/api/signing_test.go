@@ -132,7 +132,7 @@ func TestAStatementThatDoesNotVerifyIsRefusedAndSaidSo(t *testing.T) {
 	// this service pins a different root. Nothing is signed, and health says why.
 	other := keyryxtest.NewRoot(t).Pin()
 	s, _, _, _ := newKeyryxStandWith(t, false, true, func(*keyryxtest.Server) string { return other }, nil)
-	rec, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-6"))
+	rec, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), s.proof(t, "k-6"))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("a token was issued on a statement that verifies under no pinned root: %d %s", rec.Code, rec.Body.String())
 	}
@@ -145,7 +145,7 @@ func TestAForgedStatementIsNeverUsedToSign(t *testing.T) {
 	// The claims of the statement are intact, so keyclient takes it, and only its ML-DSA
 	// half is damaged. The key must not sign.
 	s, _, _, _ := newKeyryxStandWith(t, false, true, nil, func(raw []byte) []byte { return flipMLDSA(t, raw) })
-	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-7"))
+	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), s.proof(t, "k-7"))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("a token was signed by a key whose statement has a forged half: %d %v", rec.Code, body)
 	}
@@ -225,7 +225,7 @@ func contains(xs []string, x string) bool {
 
 func TestATokenIsSignedWithTheWorkingKeyKeyryxCertified(t *testing.T) {
 	s, fake, d, _ := newKeyryxStand(t, false, true)
-	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-1"))
+	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), s.proof(t, "k-1"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the exchange was refused with a certified key: %d %s", rec.Code, rec.Body.String())
 	}
@@ -242,7 +242,7 @@ func TestNoTokenIsIssuedBeforeAKeyIsCertifiedEvenWithAFileKeyPresent(t *testing.
 	// The file key is still configured, and published for the overlap. It must not
 	// sign: with no certified key the answer is a refusal, never a token.
 	s, _, _, _ := newKeyryxStand(t, true, false)
-	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-2"))
+	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), s.proof(t, "k-2"))
 	if rec.Code != http.StatusServiceUnavailable || body["error"] != "temporarily_unavailable" {
 		t.Fatalf("with no certified key the exchange answered %d %s, want 503 temporarily_unavailable",
 			rec.Code, rec.Body.String())
@@ -252,7 +252,7 @@ func TestNoTokenIsIssuedBeforeAKeyIsCertifiedEvenWithAFileKeyPresent(t *testing.
 func TestNoTokenIsIssuedOnceTheStatementHasRunOut(t *testing.T) {
 	s, _, _, _ := newKeyryxStand(t, false, true)
 	s.advance(73 * time.Hour) // the statement is for 72 hours and has not been renewed
-	rec, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-3"))
+	rec, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), s.proof(t, "k-3"))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("a token was issued after the working key's statement ran out: %d %s", rec.Code, rec.Body.String())
 	}
@@ -304,7 +304,7 @@ func TestTheWorkingKeyIsRenewedAtHalfLifeAndTheNewKeySignsAfterIt(t *testing.T) 
 	if err := j.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-4"))
+	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), s.proof(t, "k-4"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the exchange was refused after renewal: %d %s", rec.Code, rec.Body.String())
 	}
@@ -323,7 +323,7 @@ func TestWithTheFileSignerNothingChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.srv.Signer = fs
-	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "k-5"))
+	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), s.proof(t, "k-5"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the file-keyed exchange was refused: %d %s", rec.Code, rec.Body.String())
 	}

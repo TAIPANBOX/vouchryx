@@ -194,7 +194,7 @@ func TestAnExchangeIssuesATokenBoundToTheProofsKeyWithTheChainTheRightWayRound(t
 	s := newStand(t)
 	w, body := s.exchange(t,
 		s.input(t, "user://acme/alice", nil),
-		s.input(t, "agent://acme/triage", nil),
+		s.actor(t, "agent://acme/triage", nil),
 		s.proof(t, "p1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("a correct exchange was refused: %d %s", w.Code, w.Body)
@@ -240,7 +240,7 @@ func TestASecondExchangeExtendsTheChainRatherThanReplacingIt(t *testing.T) {
 	s := newStand(t)
 	_, first := s.exchange(t,
 		s.input(t, "user://acme/alice", nil),
-		s.input(t, "agent://acme/triage", nil),
+		s.actor(t, "agent://acme/triage", nil),
 		s.proof(t, "c1"))
 	firstToken, _ := first["access_token"].(string)
 	if firstToken == "" {
@@ -254,7 +254,7 @@ func TestASecondExchangeExtendsTheChainRatherThanReplacingIt(t *testing.T) {
 	// The second hop presents a subject token from the IdP carrying the chain
 	// so far, and a new actor.
 	subject := s.input(t, "user://acme/alice", map[string]any{"act": firstClaims["act"]})
-	_, second := s.exchange(t, subject, s.input(t, "agent://acme/runbook", nil), s.proof(t, "c2"))
+	_, second := s.exchange(t, subject, s.actor(t, "agent://acme/runbook", nil), s.proof(t, "c2"))
 	secondToken, _ := second["access_token"].(string)
 	if secondToken == "" {
 		t.Fatalf("the second exchange failed: %v", second)
@@ -279,7 +279,7 @@ func TestNoProofMeansNoToken(t *testing.T) {
 	// Without a proof there is nothing to bind to, and issuing anyway would
 	// make every token in the estate a bearer token.
 	s := newStand(t)
-	w, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), "")
+	w, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), "")
 	if w.Code == http.StatusOK {
 		t.Fatal("a token was issued with no DPoP proof")
 	}
@@ -292,7 +292,7 @@ func TestATokenFromAnUntrustedIssuerIsRefused(t *testing.T) {
 		"iss": "https://evil.example", "sub": "user://acme/alice", "aud": audience,
 		"exp": s.now.Add(time.Hour).Unix(),
 	})
-	w, _ := s.exchange(t, forged, s.input(t, "agent://acme/triage", nil), s.proof(t, "p2"))
+	w, _ := s.exchange(t, forged, s.actor(t, "agent://acme/triage", nil), s.proof(t, "p2"))
 	if w.Code == http.StatusOK {
 		t.Fatal("a token from an unconfigured issuer was exchanged")
 	}
@@ -308,7 +308,7 @@ func TestATokenSignedByTheWrongKeyOfATrustedIssuerIsRefused(t *testing.T) {
 		"iss": idpIss, "sub": "user://acme/root", "aud": audience,
 		"exp": s.now.Add(time.Hour).Unix(),
 	})
-	w, _ := s.exchange(t, forged, s.input(t, "agent://acme/triage", nil), s.proof(t, "p3"))
+	w, _ := s.exchange(t, forged, s.actor(t, "agent://acme/triage", nil), s.proof(t, "p3"))
 	if w.Code == http.StatusOK {
 		t.Fatal("a token signed by the wrong key was exchanged")
 	}
@@ -324,7 +324,7 @@ func TestAnExpiredOrEndlessInputTokenIsRefused(t *testing.T) {
 		"no exp":  {"exp": nil},
 	} {
 		w, _ := s.exchange(t, s.input(t, "user://acme/alice", over),
-			s.input(t, "agent://acme/triage", nil), s.proof(t, "p-"+name))
+			s.actor(t, "agent://acme/triage", nil), s.proof(t, "p-"+name))
 		if w.Code == http.StatusOK {
 			t.Fatalf("an %s subject token was exchanged", name)
 		}
@@ -335,7 +335,7 @@ func TestATokenMintedForSomebodyElseCannotBeSpentHere(t *testing.T) {
 	s := newStand(t)
 	w, _ := s.exchange(t,
 		s.input(t, "user://acme/alice", map[string]any{"aud": "https://someone-else.example"}),
-		s.input(t, "agent://acme/triage", nil), s.proof(t, "p4"))
+		s.actor(t, "agent://acme/triage", nil), s.proof(t, "p4"))
 	if w.Code == http.StatusOK {
 		t.Fatal("a token for another audience was exchanged")
 	}
@@ -352,7 +352,7 @@ func TestAnHonestProofBehindATLSTerminatorIsAccepted(t *testing.T) {
 	s := newStand(t)
 	w, _ := s.exchange(t,
 		s.input(t, "user://acme/alice", nil),
-		s.input(t, "agent://acme/triage", nil),
+		s.actor(t, "agent://acme/triage", nil),
 		s.proof(t, "terminator-1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("an honest proof behind a TLS terminator was refused: %d %s", w.Code, w.Body)
@@ -367,7 +367,7 @@ func TestAProofMintedForTheSocketURLRatherThanTheIssuerIsRefused(t *testing.T) {
 	s := newStand(t)
 	buf := captureLog(t)
 	proof := s.proofForHTU(t, s.holder, "socket-1", "http://vouchryx.test/v1/token")
-	w, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), proof)
+	w, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), proof)
 	if w.Code == http.StatusOK {
 		t.Fatal("a proof minted for the raw socket URL, not the configured issuer, was accepted")
 	}
@@ -387,7 +387,7 @@ func TestATrailingSlashOnTheIssuerStillYieldsTheSameExpectedHtu(t *testing.T) {
 	s.srv.Cfg.Issuer = ourIss + "/"
 	w, _ := s.exchange(t,
 		s.input(t, "user://acme/alice", nil),
-		s.input(t, "agent://acme/triage", nil),
+		s.actor(t, "agent://acme/triage", nil),
 		s.proof(t, "trailing-slash"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("a trailing slash on the issuer broke the expected htu: %d %s", w.Code, w.Body)
@@ -403,13 +403,13 @@ func TestAWidenedScopeGetsADifferentOAuthCodeThanEveryOtherRefusal(t *testing.T)
 	s := newStand(t)
 	_, scopeBody := s.exchangeScope(t,
 		s.input(t, "user://acme/alice", map[string]any{"scope": "read"}),
-		s.input(t, "agent://acme/triage", nil),
+		s.actor(t, "agent://acme/triage", nil),
 		s.proof(t, "s1-scope"),
 		"read write")
 	if scopeBody["error"] != "invalid_scope" {
 		t.Fatalf("a widened scope did not get invalid_scope: %v", scopeBody)
 	}
-	_, otherBody := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), "")
+	_, otherBody := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), "")
 	if otherBody["error"] != "invalid_grant" {
 		t.Fatalf("a non-scope refusal did not get invalid_grant: %v", otherBody)
 	}
@@ -440,7 +440,7 @@ func TestARequestedScopeMustBeHeldByTheSubject(t *testing.T) {
 			}
 			w, body := s.exchangeScope(t,
 				s.input(t, "user://acme/alice", over),
-				s.input(t, "agent://acme/triage", nil),
+				s.actor(t, "agent://acme/triage", nil),
 				s.proof(t, "scope-"+c.name),
 				c.requested)
 			if c.wantIssued {
@@ -476,7 +476,7 @@ func TestAScopeRefusalReachesTheRecord(t *testing.T) {
 
 	rec, body := s.exchangeScope(t,
 		s.input(t, "user://acme/alice", map[string]any{"scope": "read"}),
-		s.input(t, "agent://acme/triage", nil),
+		s.actor(t, "agent://acme/triage", nil),
 		s.proof(t, "scope-record"),
 		"read write admin")
 	if rec.Code == http.StatusOK {
@@ -523,20 +523,20 @@ func TestARefusalDoesNotSayWhichCheckFailed(t *testing.T) {
 	s := newStand(t)
 	cases := map[string]func() (*httptest.ResponseRecorder, map[string]any){
 		"no proof": func() (*httptest.ResponseRecorder, map[string]any) {
-			return s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/t", nil), "")
+			return s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/t", nil), "")
 		},
 		"expired": func() (*httptest.ResponseRecorder, map[string]any) {
 			return s.exchange(t, s.input(t, "user://acme/alice", map[string]any{"exp": s.now.Add(-time.Hour).Unix()}),
-				s.input(t, "agent://acme/t", nil), s.proof(t, "o1"))
+				s.actor(t, "agent://acme/t", nil), s.proof(t, "o1"))
 		},
 		"bad aud": func() (*httptest.ResponseRecorder, map[string]any) {
 			return s.exchange(t, s.input(t, "user://acme/alice", map[string]any{"aud": "elsewhere"}),
-				s.input(t, "agent://acme/t", nil), s.proof(t, "o2"))
+				s.actor(t, "agent://acme/t", nil), s.proof(t, "o2"))
 		},
 		"stolen bound token": func() (*httptest.ResponseRecorder, map[string]any) {
 			// Bound to another key: the presenter is not the holder.
 			return s.exchange(t, s.boundInput(t, "user://acme/alice", key(t), nil),
-				s.input(t, "agent://acme/t", nil), s.proof(t, "o3"))
+				s.actor(t, "agent://acme/t", nil), s.proof(t, "o3"))
 		},
 		"revoked subject": func() (*httptest.ResponseRecorder, map[string]any) {
 			rs := newStand(t).realClock()
@@ -545,7 +545,7 @@ func TestARefusalDoesNotSayWhichCheckFailed(t *testing.T) {
 			}
 			rs.now = rs.now.Add(time.Second)
 			return rs.exchange(t, rs.input(t, "user://acme/alice", map[string]any{"iat": rs.now.Unix() - 5}),
-				rs.input(t, "agent://acme/t", nil), rs.proof(t, "o4"))
+				rs.actor(t, "agent://acme/t", nil), rs.proof(t, "o4"))
 		},
 	}
 	var seen []string
@@ -1147,7 +1147,7 @@ func TestARefusalAfterTheSubjectIsKnownReachesTheRecord(t *testing.T) {
 	subject := s.input(t, "user://acme/alice", map[string]any{
 		"act": map[string]any{"sub": "agent://acme/triage"},
 	})
-	rec, _ := s.exchange(t, subject, s.input(t, "agent://acme/triage", nil), s.proof(t, "p-dup"))
+	rec, _ := s.exchange(t, subject, s.actor(t, "agent://acme/triage", nil), s.proof(t, "p-dup"))
 	if rec.Code == http.StatusOK {
 		t.Fatalf("the stand did not produce a refusal, so this test proves nothing: %s", rec.Body)
 	}
@@ -1223,7 +1223,7 @@ func TestEveryEventThisServiceWritesNamesAnAgent(t *testing.T) {
 	// A human delegating to an agent: the case this service exists for.
 	rec, _ := s.exchange(t,
 		s.input(t, "user://acme/alice", nil),
-		s.input(t, "agent://acme/triage", nil),
+		s.actor(t, "agent://acme/triage", nil),
 		s.proof(t, "p-agentid"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the stand did not issue, so this test proves nothing: %s", rec.Body)
@@ -1288,7 +1288,7 @@ func TestEveryRefusalReachesTheOperator(t *testing.T) {
 		send   func(*stand) *httptest.ResponseRecorder
 	}{
 		{"no proof at all", "no_dpop_proof", func(s *stand) *httptest.ResponseRecorder {
-			w, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), "")
+			w, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), "")
 			return w
 		}},
 		{"a grant type this service does not run", "grant_type_not_implemented", func(s *stand) *httptest.ResponseRecorder {
@@ -1303,7 +1303,7 @@ func TestEveryRefusalReachesTheOperator(t *testing.T) {
 			return s.revoke(t, `{"actor":"user://acme/alice","reason":"x"}`, revokeTestKey)
 		}},
 		{"a bound token presented by somebody else", "subject_key_mismatch", func(s *stand) *httptest.ResponseRecorder {
-			w, _ := s.exchange(t, s.boundInput(t, "user://acme/alice", key(t), nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "e1"))
+			w, _ := s.exchange(t, s.boundInput(t, "user://acme/alice", key(t), nil), s.actor(t, "agent://acme/triage", nil), s.proof(t, "e1"))
 			return w
 		}},
 		{"a revoked subject", "subject_revoked", func(s *stand) *httptest.ResponseRecorder {
@@ -1312,7 +1312,7 @@ func TestEveryRefusalReachesTheOperator(t *testing.T) {
 				t.Fatalf("revoke: %d", w.Code)
 			}
 			s.now = s.now.Add(time.Second)
-			w, _ := s.exchange(t, s.input(t, "user://acme/alice", map[string]any{"iat": s.now.Unix() - 5}), s.input(t, "agent://acme/triage", nil), s.proof(t, "e2"))
+			w, _ := s.exchange(t, s.input(t, "user://acme/alice", map[string]any{"iat": s.now.Unix() - 5}), s.actor(t, "agent://acme/triage", nil), s.proof(t, "e2"))
 			return w
 		}},
 	} {

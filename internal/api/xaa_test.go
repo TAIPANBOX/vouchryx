@@ -456,7 +456,7 @@ func TestTheExchangePathIsUnchanged(t *testing.T) {
 	s := newXAAStand(t)
 	w, body := s.exchange(t,
 		s.input(t, "user://acme/alice", nil),
-		s.input(t, "agent://acme/triage", nil),
+		s.actor(t, "agent://acme/triage", nil),
 		s.proof(t, "unchanged-1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("the token-exchange grant was refused after W3's dispatch was added: %d %s", w.Code, w.Body)

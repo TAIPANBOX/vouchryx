@@ -68,7 +68,7 @@ func standWithKeyFile(t *testing.T, initial map[string]*ecdsa.PrivateKey) (*stan
 func TestATokenFromAProviderThatRotatedItsKeyIsExchangedOnceTheFileFollows(t *testing.T) {
 	oldKey, newKey := key(t), key(t)
 	s, jwks := standWithKeyFile(t, map[string]*ecdsa.PrivateKey{"idp-1": oldKey})
-	actor := s.inputFrom(t, oldKey, "idp-1", idpIss, "agent://acme/triage", nil)
+	actor := s.inputFrom(t, oldKey, "idp-1", idpIss, "agent://acme/triage", s.holderCnf(t))
 	rotated := func() string {
 		return s.inputFrom(t, newKey, "idp-2", idpIss, "user://acme/alice", nil)
 	}
@@ -96,7 +96,7 @@ func TestATokenFromAProviderThatRotatedItsKeyIsExchangedOnceTheFileFollows(t *te
 func TestAKeyTheOperatorRemovedFromTheFileStopsVerifyingAfterTheReload(t *testing.T) {
 	oldKey, newKey := key(t), key(t)
 	s, jwks := standWithKeyFile(t, map[string]*ecdsa.PrivateKey{"idp-1": oldKey, "idp-2": newKey})
-	actor := s.inputFrom(t, newKey, "idp-2", idpIss, "agent://acme/triage", nil)
+	actor := s.inputFrom(t, newKey, "idp-2", idpIss, "agent://acme/triage", s.holderCnf(t))
 	subject := func() string { return s.inputFrom(t, oldKey, "idp-1", idpIss, "user://acme/alice", nil) }
 
 	if rec, _ := s.exchange(t, subject(), actor, s.proof(t, "rm-1")); rec.Code != http.StatusOK {
@@ -113,7 +113,7 @@ func TestAKeyTheOperatorRemovedFromTheFileStopsVerifyingAfterTheReload(t *testin
 func TestABrokenKeySetFileKeepsTheKeysHeldAndTheExchangeWorking(t *testing.T) {
 	oldKey := key(t)
 	s, jwks := standWithKeyFile(t, map[string]*ecdsa.PrivateKey{"idp-1": oldKey})
-	actor := s.inputFrom(t, oldKey, "idp-1", idpIss, "agent://acme/triage", nil)
+	actor := s.inputFrom(t, oldKey, "idp-1", idpIss, "agent://acme/triage", s.holderCnf(t))
 	if err := os.WriteFile(jwks, []byte("<html>502 Bad Gateway</html>"), 0o600); err != nil {
 		t.Fatal(err)
 	}

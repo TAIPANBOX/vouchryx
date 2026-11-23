@@ -249,8 +249,8 @@ not a convenience.
     (`actor_token_is_a_delegation`). Until 2026-09-17 `verifyInput` compared
     nothing with the proof, so a lifted bound token presented with a fresh
     proof from another key came back bound to the thief's key. The response
-    shape is unchanged for unbound inputs, which is every deployment today
-    (invariant 15 adds a `scope` claim a subject held, and `delegation_issued`
+    shape was unchanged for unbound inputs, which was every deployment then
+    (invariant 31 later refused an unbound actor credential; invariant 15 adds a `scope` claim a subject held, and `delegation_issued`
     gains `cnf_source`, which SPEC 6.1 tells consumers to ignore when unknown).
     A refused hand-off attempt with a lifted token is filed under the HOLDER
     named in the token's chain, the victim, because that is whose history it
@@ -700,18 +700,19 @@ not a convenience.
     could exchange it. The operator marks an issuer that does send such tokens
     with a fourth `|unbound` field on its `VOUCHRYX_TRUSTED_ISSUERS` line. The
     marker is read from configuration only, a token cannot assert it, and it
-    applies to that issuer alone. Any other unbound subject token is refused with
+    applies to that issuer's subject tokens alone. Any other unbound subject token is refused with
     `invalid_grant`, recorded as `delegation_denied` with reason `subject_unbound`,
     and filed under the holder its chain names (invariant 11). A first hop has no
     holder, so its refusal reaches the log and not the event stream, which is
-    what SPEC 6.1 filing gives every first-hop refusal. A marked exchange proceeds
-    as before, the result bound to the presenter's proof key, and its
-    `delegation_issued` record carries `subject_unbound: true`.
+    what SPEC 6.1 filing gives every first-hop refusal. A marked exchange proceeds,
+    the result bound to the key the actor's credential names, which the presenter
+    proved (invariant 31), and its `delegation_issued` record carries
+    `subject_unbound: true`.
 
     A line with no fourth field parses as it always did. A fourth field other
     than `unbound`, or the marker on `VOUCHRYX_WORKLOAD_ISSUERS`, refuses the
-    start. Invariant 26 covers the subject token only: an unbound ACTOR credential
-    on a first hop is still accepted (README NOT PROVEN).
+    start. Invariant 26 covers the subject token only; an actor credential with no
+    key is refused whatever the marker says (invariant 31).
     *(tests: `TestAnUnboundSubjectTokenFromAnUnmarkedIssuerIsRefused`,
     `TestAnUnboundSubjectTokenFromAMarkedIssuerIsExchangedAndTheRecordSaysSo`,
     `TestTheMarkIsPerIssuerNotPerService`, `TestATokenCannotMarkItselfUnbound`,
@@ -912,6 +913,42 @@ not a convenience.
     asking, the lift route not asking, a ban judged as a plain revocation, the
     lift asking after the ban list, an unknown right accepted, a prefix without
     its closing `/` accepted. Scenarios: `features/agent-credentials.feature`)*
+
+31. **An actor credential names the key the delegation is bound to, and one that
+    names none is refused, on a first hop as on a hand-off.** `@decided 2026-11-23`:
+    an actor credential on a first hop must be bound to the presenter's proof key;
+    an unbound one is refused, even though deployments whose agents present unbound
+    credentials stop working until they bind them. No operator opt-in restores the
+    old behaviour: the `|unbound` marker of invariant 26 says an issuer's SUBJECT
+    tokens carry no key, and it is not read for the actor.
+
+    Until this change a first hop with an unbound actor credential bound its result
+    to the presenter's own proof key, so an identity provider's token naming an
+    agent was a bearer credential: whoever captured it exchanged it with any key
+    they held and came away with a delegation in that agent's name, bound to their
+    own key. Now the key always comes from the actor's verified credential
+    (`cnf.jkt`). When the subject token carries a key, its holder presents and the
+    result binds to the actor's key, which may be another party's (the hand-off,
+    invariant 13). When the subject token carries none, the presenter is the actor
+    and the proof must be signed by the actor's key (`actor_key_mismatch`
+    otherwise). A credential with no key is refused with
+    `invalid_grant`, reason `actor_credential_unbound`, through `refuse` to the
+    operator's log (invariant 11) and filed under the actor's `sub` when it is an
+    `agent://`, because it is that agent's history somebody tried to write into.
+    This service's own agent credential (invariant 23) is always bound, so an agent
+    whose provider issues no DPoP-bound token uses that. The exchange's
+    `delegation_issued` keeps `cnf_source`, now always `actor_token` there (the
+    agent and Cross App Access grants still write `proof`). `@claude 2026-11-23`: reusing the
+    hand-off's reason name rather than a new one, and filing under the actor, are
+    this repository's reading.
+    *(tests: `TestACapturedUnboundAgentCredentialIsNotExchangedOnAFirstHop`,
+    `TestTheUnboundMarkerNeverAdmitsAnUnboundActorCredential`,
+    `TestEveryIssuedDelegationIsBoundToTheKeyItsAgentCredentialNames`,
+    `TestABoundActorCredentialIsExchangedOnlyByItsHolder`,
+    `TestADelegatorCannotMintATokenNamingADelegateButBoundToItsOwnKey`
+    (`internal/api`); `TestTheServerAcceptsWhatThisPackageMints` (`internal/demo`,
+    the demo's actor token bound to the holder key); the first three red first
+    against 22ad735. Scenarios: `features/delegation.feature`)*
 
 ## Distribution
 

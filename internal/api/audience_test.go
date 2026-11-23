@@ -34,7 +34,7 @@ func (s *stand) exchangeFor(t *testing.T, audience, proof string) (*httptest.Res
 	form := url.Values{
 		"grant_type":    {GrantType},
 		"subject_token": {s.input(t, "user://acme/alice", nil)},
-		"actor_token":   {s.input(t, "agent://acme/triage", nil)},
+		"actor_token":   {s.actor(t, "agent://acme/triage", nil)},
 	}
 	if audience != "" {
 		form.Set("audience", audience)
