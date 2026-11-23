@@ -482,12 +482,14 @@ echo "sha256:$(printf %s "$ENROLMENT_KEY" | sha256sum | cut -d' ' -f1)"
 **Stopping an agent is one call**, and so is letting it back:
 
 ```bash
+# REVOKE_KEY is one key taken from VOUCHRYX_REVOKE_KEYS (the comma-separated
+# list); for a scoped `key|rights|prefix` entry it is the key part alone
 curl -s -X POST http://127.0.0.1:4310/v1/revoke \
-  -H "Authorization: Bearer $VOUCHRYX_REVOKE_KEY" \
+  -H "Authorization: Bearer $REVOKE_KEY" \
   -d '{"subject":"agent://acme/triage","ban":true,"actor":"user://acme/op","reason":"stopped"}'
 
 curl -s -X POST http://127.0.0.1:4310/v1/revoke/lift \
-  -H "Authorization: Bearer $VOUCHRYX_REVOKE_KEY" \
+  -H "Authorization: Bearer $REVOKE_KEY" \
   -d '{"subject":"agent://acme/triage","actor":"user://acme/op","reason":"fixed"}'
 ```
 
@@ -504,12 +506,20 @@ refused leaves the ban standing.
 
 **Not here.** Verification, the algorithm allowlist, the DPoP proof check and
 the `act` chain are `agent-stack-go/delegation`, pinned in `go.mod` (`agent-stack-go/v2`
-v2.0.2, which carries the `keyclient` the wave-2 signing work uses). The JWS of a token this service issues is assembled by
+v2.0.3, which carries the `keyclient` the wave-2 signing work uses). The JWS of a token this service issues is assembled by
 `internal/signer` (CLAUDE.md invariant 27), which signs with the file key, or,
 with `VOUCHRYX_SIGNER=keyryx`, with the working key held by `keyclient` and
 certified by Keyryx. Keyryx's statement for that key is verified against the
 delegation root this service pins, in `internal/statement`, before the key is
-used (invariant 28). `delegation.SignES256` is no longer called. This
+used (invariant 28). In keyryx mode this service is a client of Keyryx
+custody's routes and serves none of them: `POST /v1/keys/{name}/challenge` and
+`POST /v1/keys/{name}/delegate` certify the working key (through `keyclient`),
+`GET /v1/jwks/{name}` reads Keyryx's published set for `vouchryx` and the
+delegation root `keyryx.delegation-root`, and `GET /v1/statements/{kid}` is the
+custody route a served key's statement could be checked against, which this
+service does not call (see NOT PROVEN). `internal/keyryxtest` is the fake
+custody the tests run against and serves the first three.
+`delegation.SignES256` is no longer called. This
 service imports the library. When that was measured, on 2026-09-16 over every Go
 repository in the stack, it was the only Go service that did. Measured again on
 2026-11-04 over `main` of `wardryx`, `keyryx`, `idryx`, `scopyx`, `heraldyx`,
@@ -712,8 +722,9 @@ Stated here rather than left to be discovered.
   this service serves: Keyryx's published set, and in the overlap the file key's
   public half. Only the working key's own statement is checked. A party on the
   channel that puts its own public key into that set is not caught here. Checking
-  each served kid against `GET /v1/statements/{kid}` is the larger half of the
-  wave-2 verification design and is not built.
+  each served kid against Keyryx custody's `GET /v1/statements/{kid}` (a route of
+  custody, not of this service) is the larger half of the wave-2 verification
+  design and is not built.
 - **The statement format is a copy of keyryx's, tested against this repository's
   fake custody.** `internal/statement` follows keyryx's `internal/statement` at
   origin/main 43bb8c4. The tests sign with `internal/keyryxtest`, which follows the
