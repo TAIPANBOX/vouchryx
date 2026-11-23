@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-368-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-378-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -217,7 +217,9 @@ VOUCHRYX_KEYRYX_ROOT_PIN  the delegation root's kids, one ES384 and one ML-DSA-6
 VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path`, one per line; add `|unbound`
                           for an issuer whose subject tokens carry no key
                           (such a token is refused without the marker). The
-                          key set file is read again while this runs
+                          marker never admits an actor token with no key
+                          (CLAUDE.md invariant 31). The key set file is read
+                          again while this runs
 VOUCHRYX_JWKS_RELOAD_SECONDS  how often the key set files of the trusted and
                           the workload issuers are read again, default 30;
                           0 reads them at start only (CLAUDE.md invariant 29)
@@ -276,9 +278,17 @@ trusted-issuer line works as described, with three facts an operator needs:
   (`labs/oidc-keycloak/provision.sh` does it for the test realm). A mapping from
   an opaque `sub` to a URI is a naming decision this service does not make.
 - **A provider that binds its tokens with DPoP gives a `cnf.jkt` this service
-  honours; one that does not needs the `|unbound` marker.** Keycloak 26.8.1
-  binds access tokens to the client's key when the client asks for it, and the
-  thumbprint it writes is the one this service computes.
+  honours; one that does not needs the `|unbound` marker for its subject
+  tokens.** Keycloak 26.8.1 binds access tokens to the client's key when the
+  client asks for it, and the thumbprint it writes is the one this service
+  computes.
+- **The agent's token, the `actor_token`, must carry a `cnf.jkt`, and on a
+  first hop the `DPoP` proof must be signed by that key.** An actor token with
+  no key is refused (`actor_credential_unbound` in the log), whatever its
+  issuer's marker says: there is nobody to check the presenter against, so a
+  captured copy would exchange for whoever held any key. An agent that has no
+  DPoP-bound token from its provider uses this service's own credential, the
+  `client_credentials` grant below, which is always bound.
 
 ## Walking the loop
 
@@ -299,7 +309,8 @@ go build -o vouchryx-demo ./cmd/vouchryx-demo
 ./vouchryx-demo keygen -out signing
 ./vouchryx-demo keygen -out holder
 
-# the demo issuer sends tokens with no key, so it is marked unbound
+# the demo issuer's person tokens carry no key, so it is marked unbound;
+# the agent's token it mints is bound to holder.pem
 VOUCHRYX_ISSUER=http://127.0.0.1:4310 \
 VOUCHRYX_SIGNING_KEY=signing.pem \
 VOUCHRYX_TRUSTED_ISSUERS="https://idp.local|http://127.0.0.1:4310|idp.jwks.json|unbound" \
@@ -321,9 +332,10 @@ which prints a token carrying, measured on 2026-08-27:
   "iat": 1787862197, "exp": 1787862497, "jti": "McIAWz0jmD82xc8uv7TdYQ" }
 ```
 
-`cnf.jkt` is the thumbprint of `holder.pem`, which is what makes the token
-useless to anybody who lifts it: spending it needs a **fresh** proof from the
-same key, per request.
+`cnf.jkt` is the thumbprint of `holder.pem`, the key the agent's token names
+and the proof is signed with, which is what makes the token useless to
+anybody who lifts it: spending it needs a **fresh** proof from the same key,
+per request.
 
 ```sh
 ./vouchryx-demo proof -key holder.pem -htm POST \
@@ -565,8 +577,18 @@ line, both written every time.
 
 ## Testing
 
-306 tests. Tier T3: these are authorization decisions where a wrong answer is
+309 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
+
+**The actor credential's key (invariant 31) was planted with 8 faults, one at a
+time: all 8 were caught by a named test.** The unbound-actor check dropped, the
+check narrowed back to the hand-off, the result bound to the proof key, the
+first-hop key match dropped, the key match applied to hand-offs too, the
+refusal filed under nobody, the refusal's reason renamed, and the demo's actor
+token minted without its key. The check narrowed back to the hand-off is caught
+by `TestACapturedUnboundAgentCredentialIsNotExchangedOnAFirstHop` alone: the
+first-hop key match still refuses that exchange, under the wrong reason, which
+the test reads in the log.
 
 **The revoke key scope (invariant 30) was planted with 10 faults, one at a time:
 all 10 were caught by a named test.** A scoped key always refused, the jti check
@@ -634,14 +656,6 @@ staticcheck ./...
 ## NOT PROVEN
 
 Stated here rather than left to be discovered.
-
-- **An unbound ACTOR credential is still accepted on a first hop.** Invariant 26
-  covers the subject token only. On a first hop with an unbound actor
-  credential, the result is bound to the presenter's own proof key, so a
-  captured identity-provider token that names an agent could be exchanged by
-  whoever holds any key. Not closed by this change; it needs its own decision,
-  because refusing it would break any deployment whose agents present unbound
-  credentials.
 
 - **The revocation store is a local file**: no replication, no cross-instance
   sharing, compacted only at start (a long-running process under heavy

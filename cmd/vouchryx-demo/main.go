@@ -178,7 +178,7 @@ func exchange(args []string) error {
 	if err != nil {
 		return err
 	}
-	act, err := demo.InputToken(idp, *kid, *iss, *aud, *actor, now, *ttl)
+	act, err := demo.ActorToken(idp, *kid, *iss, *aud, *actor, &holder.PublicKey, now, *ttl)
 	if err != nil {
 		return err
 	}

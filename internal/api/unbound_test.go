@@ -98,7 +98,7 @@ func TestAnUnboundSubjectTokenFromAnUnmarkedIssuerIsRefused(t *testing.T) {
 	s := newStand(t)
 	s.srv.Cfg.Trusted[0].Unbound = false
 	subject := s.input(t, "user://acme/alice", nil) // an identity provider's token: no cnf.jkt
-	rec, body := s.exchange(t, subject, s.input(t, "agent://acme/triage", nil), s.proof(t, "u-1"))
+	rec, body := s.exchange(t, subject, s.actor(t, "agent://acme/triage", nil), s.proof(t, "u-1"))
 	if rec.Code != http.StatusBadRequest || body["error"] != "invalid_grant" {
 		t.Fatalf("an unbound subject token from an issuer not marked as issuing them was exchanged: %d %s",
 			rec.Code, rec.Body.String())
@@ -120,17 +120,18 @@ func TestAnUnboundSubjectTokenFromAMarkedIssuerIsExchangedAndTheRecordSaysSo(t *
 	s := newStand(t)
 	s.srv.Events = w
 	s.srv.Cfg.Trusted[0].Unbound = true
-	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "u-2"))
+	rec, body := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), s.proof(t, "u-2"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("a marked issuer's unbound token was refused: %d %s", rec.Code, rec.Body.String())
 	}
 
-	// Exactly as before the marker: the result is bound to the presenter's proof key.
+	// The result is bound to the key the agent's credential names, which the
+	// presenter proved (invariant 31); the marker changes nothing about that.
 	token, _ := body["access_token"].(string)
 	want := thumbOf(t, s.holder)
 	cnf, _ := claimsOf(t, s, token)["cnf"].(map[string]any)
 	if cnf["jkt"] != want {
-		t.Fatalf("the issued token is bound to %v, want the proof's key %s", cnf["jkt"], want)
+		t.Fatalf("the issued token is bound to %v, want the agent credential's and the proof's key %s", cnf["jkt"], want)
 	}
 
 	// And the record says the subject was not bound, so an operator can tell
@@ -147,14 +148,14 @@ func TestTheMarkIsPerIssuerNotPerService(t *testing.T) {
 	s.srv.Cfg.Trusted[0].Unbound = false
 	other := s.addIssuer(t, otherIss, true)
 
-	rec, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "u-3"))
+	rec, _ := s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), s.proof(t, "u-3"))
 	if rec.Code == http.StatusOK {
 		t.Fatal("an unmarked issuer's unbound token was exchanged because a different issuer is marked")
 	}
 
 	rec, _ = s.exchange(t,
 		s.inputFrom(t, other, "other-1", otherIss, "user://acme/bob", nil),
-		s.input(t, "agent://acme/triage", nil), s.proof(t, "u-4"))
+		s.actor(t, "agent://acme/triage", nil), s.proof(t, "u-4"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the marked issuer's unbound token was refused: %d %s", rec.Code, rec.Body.String())
 	}
@@ -167,7 +168,7 @@ func TestATokenCannotMarkItselfUnbound(t *testing.T) {
 	s := newStand(t)
 	s.srv.Cfg.Trusted[0].Unbound = false
 	subject := s.input(t, "user://acme/alice", map[string]any{"unbound": true, "marked_unbound": true})
-	rec, _ := s.exchange(t, subject, s.input(t, "agent://acme/triage", nil), s.proof(t, "u-5"))
+	rec, _ := s.exchange(t, subject, s.actor(t, "agent://acme/triage", nil), s.proof(t, "u-5"))
 	if rec.Code == http.StatusOK {
 		t.Fatal("a token that names itself unbound was exchanged by an issuer that is not marked")
 	}
@@ -190,7 +191,7 @@ func TestAnUnboundHandOffRefusalIsRecordedUnderItsHolder(t *testing.T) {
 	subject := s.input(t, "user://acme/alice", map[string]any{
 		"act": map[string]any{"sub": "agent://acme/triage"},
 	})
-	rec, _ := s.exchange(t, subject, s.input(t, "agent://acme/billing", nil), s.proof(t, "u-6"))
+	rec, _ := s.exchange(t, subject, s.actor(t, "agent://acme/billing", nil), s.proof(t, "u-6"))
 	if rec.Code == http.StatusOK {
 		t.Fatal("an unbound hand-off from an unmarked issuer was exchanged")
 	}

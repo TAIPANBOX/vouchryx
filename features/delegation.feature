@@ -495,7 +495,7 @@ Feature: A delegation that can be proved, and ended
   Scenario: A marked identity provider's unbound token is exchanged, and the record says the subject was unbound
     Given a trusted identity provider marked as issuing unbound tokens
     When a caller presents one of its tokens with a valid proof
-    Then the issued token is bound to the caller's proof key as before, and the issued record says the subject carried no key
+    Then the issued token is bound to the key the agent's credential names and the caller proved, and the issued record says the subject carried no key
 
   # @test:TestTheMarkIsPerIssuerNotPerService
   Scenario: Marking one identity provider does not mark another
@@ -520,3 +520,22 @@ Feature: A delegation that can be proved, and ended
     Given a token from an unmarked issuer that is bound to the caller's own key
     When the caller presents it with a proof of that key and a bound agent credential
     Then it is exchanged as before
+
+  # @test:TestACapturedUnboundAgentCredentialIsNotExchangedOnAFirstHop
+  Scenario: A captured agent credential that carries no key is not exchanged on a first hop
+    Given a person token from an identity provider marked as issuing unbound tokens
+    And an agent credential from that provider that carries no key
+    When somebody presents the two with a valid proof of a key of their own
+    Then nothing is issued, the answer names no check, and the refusal reaches the operator's log and the agent's record
+
+  # @test:TestTheUnboundMarkerNeverAdmitsAnUnboundActorCredential
+  Scenario: The unbound marker concerns the subject token and never admits an actor credential with no key
+    Given an identity provider marked as issuing unbound tokens, and one that is not
+    When an agent credential with no key from either of them is presented as the actor of a first hop
+    Then both are refused, whatever the subject token is
+
+  # @test:TestEveryIssuedDelegationIsBoundToTheKeyItsAgentCredentialNames
+  Scenario: Every delegation issued is bound to the key the agent's own credential names
+    Given every combination of a subject token with or without a key and an agent credential with or without a key
+    When each is presented by the holder of the keys it names
+    Then a delegation is issued exactly when the agent credential names a key, and it is bound to that key

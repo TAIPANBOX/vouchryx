@@ -873,7 +873,7 @@ func TestAProviderThatRotatesItsKeyIsFollowedByARealProcess(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		actor, err := demo.InputToken(key, kid, "https://idp.test", issuer, "agent://acme.example/agents/triage", now, time.Minute)
+		actor, err := demo.ActorToken(key, kid, "https://idp.test", issuer, "agent://acme.example/agents/triage", &holder.PublicKey, now, time.Minute)
 		if err != nil {
 			t.Fatal(err)
 		}

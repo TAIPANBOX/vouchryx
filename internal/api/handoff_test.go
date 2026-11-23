@@ -68,7 +68,7 @@ func (s *stand) firstHop(t *testing.T, scope string) string {
 	if scope != "" {
 		over["scope"] = scope
 	}
-	w, b := s.exchange(t, s.input(t, "user://acme/alice", over), s.input(t, "agent://acme/triage", nil), s.proof(t, "hop-1"))
+	w, b := s.exchange(t, s.input(t, "user://acme/alice", over), s.actor(t, "agent://acme/triage", nil), s.proof(t, "hop-1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("the first hop failed: %d %s", w.Code, w.Body)
 	}
@@ -212,7 +212,7 @@ func TestRevokingAnAgentInsideTheChainStopsTheHandOffButNotAReissue(t *testing.T
 	}
 	// A fresh delegation naming triage AFTER the revocation is not banned:
 	// revoking is not banning (invariant 7).
-	w, b = s.exchange(t, s.input(t, "user://acme/alice", nil), s.input(t, "agent://acme/triage", nil), s.proof(t, "r-4"))
+	w, b = s.exchange(t, s.input(t, "user://acme/alice", nil), s.actor(t, "agent://acme/triage", nil), s.proof(t, "r-4"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("a fresh delegation to the revoked agent, issued after the revocation, was refused: %d %v", w.Code, b)
 	}
@@ -235,8 +235,7 @@ func TestABoundActorCredentialIsExchangedOnlyByItsHolder(t *testing.T) {
 	s := newStand(t)
 	agent := key(t)
 	credential := s.boundInput(t, "agent://acme/triage", agent, nil)
-	// Presented by its holder: issued, bound to that key, exactly as an
-	// unbound credential presented with the same proof would be.
+	// Presented by its holder: issued, bound to that key.
 	w, b := s.exchange(t, s.input(t, "user://acme/alice", nil), credential, s.proofFrom(t, agent, "own-1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("the holder of a bound credential was refused: %d %s", w.Code, w.Body)
@@ -262,7 +261,7 @@ func TestAnExchangeWithoutAScopeRequestInheritsTheSubjectsScope(t *testing.T) {
 		t.Fatalf("an exchange that asked for no scope issued scope %v, the subject held read", got)
 	}
 	// Asking for more than the subject holds is still refused.
-	w, _ := s.exchangeScope(t, s.input(t, "user://acme/alice", map[string]any{"scope": "read"}), s.input(t, "agent://acme/triage", nil), s.proof(t, "w-1"), "write")
+	w, _ := s.exchangeScope(t, s.input(t, "user://acme/alice", map[string]any{"scope": "read"}), s.actor(t, "agent://acme/triage", nil), s.proof(t, "w-1"), "write")
 	if w.Code == http.StatusOK {
 		t.Fatal("a scope the subject does not hold was issued")
 	}

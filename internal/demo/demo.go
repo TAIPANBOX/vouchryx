@@ -106,9 +106,9 @@ func ReadKey(path string) (*ecdsa.PrivateKey, error) {
 }
 
 // WriteJWKS writes the PUBLIC half as a JWK Set an operator can hand to
-// VOUCHRYX_TRUSTED_ISSUERS, to trust a demo IdP key. InputToken sends tokens
-// with no cnf.jkt, so the line for this key takes the `|unbound` marker
-// (CLAUDE.md invariant 26). It is not vouchryx's own
+// VOUCHRYX_TRUSTED_ISSUERS, to trust a demo IdP key. InputToken sends subject
+// tokens with no cnf.jkt, so the line for this key takes the `|unbound` marker
+// (CLAUDE.md invariant 26); ActorToken binds the agent's credential to its key. It is not vouchryx's own
 // signing key, so it is not what TOKENFUSE_DELEGATION_JWKS wants: a gateway
 // verifying tokens vouchryx itself issues needs the JWKS vouchryx serves at
 // GET /.well-known/jwks.json, keyed by that key's own thumbprint.
@@ -130,17 +130,36 @@ func WriteJWKS(path string, pub *ecdsa.PublicKey, kid string) error {
 	return os.WriteFile(path, append(body, '\n'), 0o644) // #nosec G306 -- public key set, world-readable by design
 }
 
-// InputToken mints one of the two tokens an exchange takes: the token a
-// customer's own identity provider would have issued, naming either the person
-// on whose behalf the work happens or the agent that will do it.
+// InputToken mints the subject token a customer's own identity provider
+// would have issued, naming the person on whose behalf the work happens. It
+// carries no key, so its issuer's VOUCHRYX_TRUSTED_ISSUERS line takes the
+// `|unbound` marker (CLAUDE.md invariant 26).
 func InputToken(idp *ecdsa.PrivateKey, kid, iss, aud, sub string, now time.Time, ttl time.Duration) (string, error) {
-	return delegation.SignES256(idp, kid, map[string]any{
+	return delegation.SignES256(idp, kid, inputClaims(iss, aud, sub, now, ttl))
+}
+
+// ActorToken mints the agent's credential an exchange takes as its actor,
+// bound to the key the agent will prove (`cnf.jkt`, RFC 9449 section 6). An
+// actor credential with no key is refused (CLAUDE.md invariant 31): whoever
+// captured one could otherwise exchange it with any key they held.
+func ActorToken(idp *ecdsa.PrivateKey, kid, iss, aud, sub string, holder *ecdsa.PublicKey, now time.Time, ttl time.Duration) (string, error) {
+	jkt, err := delegation.Thumbprint(delegation.FromPublic(holder, ""))
+	if err != nil {
+		return "", err
+	}
+	claims := inputClaims(iss, aud, sub, now, ttl)
+	claims["cnf"] = map[string]any{"jkt": jkt}
+	return delegation.SignES256(idp, kid, claims)
+}
+
+func inputClaims(iss, aud, sub string, now time.Time, ttl time.Duration) map[string]any {
+	return map[string]any{
 		"iss": iss,
 		"sub": sub,
 		"aud": aud,
 		"iat": now.Unix(),
 		"exp": now.Add(ttl).Unix(),
-	})
+	}
 }
 
 // Proof mints an RFC 9449 DPoP proof for exactly one request.

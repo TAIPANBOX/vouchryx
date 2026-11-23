@@ -352,30 +352,30 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// WHOSE KEY THE RESULT IS BOUND TO. The key comes from a verified token or
-	// from the checked proof, never from a request field:
+	// WHOSE KEY THE RESULT IS BOUND TO. The key comes from the actor's own
+	// verified credential, never from a request field and never from the proof
+	// alone:
 	//   - hand-off (bound subject, presented by its holder): the delegate's
 	//     own credential must carry `cnf.jkt` (RFC 9449 section 6) and the
 	//     result binds to it; without one the holder would mint a token
 	//     naming the delegate but bound to its own key, the delegator wearing
-	//     the delegate's name, so it is refused;
-	//   - first hop with a bound actor credential: the presenter IS the actor
-	//     and must prove that key, so the proof must match it;
-	//   - first hop with an unbound actor credential: the proof's key, as
-	//     always.
+	//     the delegate's name;
+	//   - first hop: the presenter IS the actor and must prove the key its
+	//     credential names, so the proof must match it.
+	// An actor credential that names no key is refused on either path
+	// (invariant 31). On a first hop it used to bind the result to the proof's
+	// key, which made an identity provider's token naming an agent a bearer
+	// credential: whoever captured it exchanged it with any key they held.
 	actorJKT := confirmationKey(actor)
-	if subjectJKT != "" && actorJKT == "" {
+	if actorJKT == "" {
 		deny(actorSub, "actor_credential_unbound", nil)
 		return
 	}
-	if subjectJKT == "" && actorJKT != "" && actorJKT != thumb {
+	if subjectJKT == "" && actorJKT != thumb {
 		deny(actorSub, "actor_key_mismatch", map[string]any{"bound_to": actorJKT, "presented": thumb})
 		return
 	}
-	outJKT, cnfSource := thumb, "proof"
-	if actorJKT != "" {
-		outJKT, cnfSource = actorJKT, "actor_token"
-	}
+	outJKT, cnfSource := actorJKT, "actor_token"
 
 	// The audience this token is issued FOR: the caller's `audience` if it named
 	// one, else this service's own issuer. It must be on the operator's
@@ -484,8 +484,9 @@ func (s *Server) tokenExchange(w http.ResponseWriter, r *http.Request) {
 		issued["subject_jti"] = subJTI
 	}
 	// The subject carried no key, and its issuer is marked as one that sends
-	// such tokens. The token is bound to the presenter's proof key as always;
-	// this only records that the subject itself was not bound (invariant 26).
+	// such tokens. The token is bound to the key the actor's credential names,
+	// which the presenter proved; this only records that the subject itself was
+	// not bound (invariant 26).
 	if subjectJKT == "" {
 		issued["subject_unbound"] = true
 	}
