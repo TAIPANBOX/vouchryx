@@ -100,3 +100,63 @@ Feature: A token is signed by the key Keyryx certified, or by nothing
     Given VOUCHRYX_SIGNER is keyryx and no delegation root is pinned
     When the service starts
     Then it refuses to start, and names the variable that pins the root
+
+  # @test:TestARotationOfTheFileKeyKeepsEveryTokenVerifying
+  Scenario: A rotation of the file key publishes the next key before it signs and keeps the previous one after
+    Given the file key signs and the next key is published beside it
+    When the service restarts with the next key as its file key and the previous key published beside it
+    Then a token signed before the restart verifies against the set served after it, a token signed after it verifies against the set served before it, and emptying the published file ends the overlap
+
+  # @test:TestAPublishedKeyIsServedAndNeverSigns
+  Scenario: A published key is served and never signs
+    Given a key named in VOUCHRYX_SIGNING_KEYS_PUBLISHED
+    When a token is issued
+    Then the key is in the served set and the token is signed by the file key alone
+
+  # @test:TestTheActiveKeyInThePublishedSetIsServedOnce
+  Scenario: The file key named in the published file too is served once
+    Given a published file that still names the key that now signs
+    When the key set is read
+    Then that key appears once
+
+  # @test:TestThePublishedKeysFollowTheirFileAndABrokenFileLeavesThemInForce
+  Scenario: The published keys follow their file, and a file that cannot be used never replaces them
+    Given a published file naming the next key
+    When the file is rewritten to name the previous key, then broken, made writable by everyone, removed, and finally emptied
+    Then the previous key replaces the next one without a restart, every unusable version leaves it published, and the empty file publishes nothing beside the file key
+
+  # @test:TestAMalformedPublishedKeysFileRefusesToStart
+  Scenario: A published file holding anything but public P-256 keys named by their thumbprint refuses the start
+    Given a published file with a private member, an unknown member, a key of another type or curve, a kid that is not its thumbprint, a point off the curve, a duplicate kid, or no keys member
+    When the service starts
+    Then it refuses, naming the variable and never a private value
+
+  # @test:TestAPublishedKeysFileOthersCanWriteRefusesToStart
+  Scenario: A published file others can write refuses the start
+    Given a published file writable by its group or by everyone, a directory, or a missing file
+    When the service starts
+    Then it refuses, while a symlink to a well-formed file, the way a ConfigMap is mounted, is read
+
+  # @test:TestThePublishedKeysAreRefusedInKeyryxMode
+  Scenario: The published keys are a file mode setting
+    Given VOUCHRYX_SIGNER=keyryx
+    When VOUCHRYX_SIGNING_KEYS_PUBLISHED is set too
+    Then the start is refused, because Keyryx keeps the overlap of its own set
+
+  # @test:TestHostilePublishedKeysFilesNeverPanicAndNeverPublishAnInvalidKey
+  Scenario: Hostile published files never panic and never publish a key that does not hold
+    Given three hundred seeded corruptions of a well-formed published file
+    When each is read at start
+    Then each either refuses the start or publishes only P-256 keys whose kid is their own thumbprint
+
+  # @test:TestTheFileModeKeySetSaysHowLongItMayBeCached
+  Scenario: The file mode key set says how long it may be cached
+    Given the file signer
+    When a verifier reads the key set
+    Then the answer carries Cache-Control public, max-age=60, and in keyryx mode it carries none
+
+  # @test:TestThePublishedKeysFileIsReadByTheRealBinary
+  Scenario: The built binary publishes the keys its file names and follows the file without a restart
+    Given the built binary started with VOUCHRYX_SIGNING_KEYS_PUBLISHED naming the next key
+    When the key set is read, the file is rewritten, and the key set is read again
+    Then both reads carry the file key and what the file named at that moment, and the binary refuses to start with the setting in keyryx mode

@@ -18,6 +18,7 @@
 //	VOUCHRYX_KEYRYX_CREDENTIAL_FILE  its key or projected token file: exactly one of the two with keyryx
 //	VOUCHRYX_KEYRYX_ROOT_PIN  the delegation root's kids (ES384 and ML-DSA-65), required with keyryx
 //	VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path[|unbound]` per line; optional once VOUCHRYX_AGENTS enrols an agent
+//	VOUCHRYX_SIGNING_KEYS_PUBLISHED  a JWK Set of public keys served beside the file key and never signing, optional, file mode only
 //	VOUCHRYX_JWKS_RELOAD_SECONDS  how often the key set files above are read again, default 30; 0 never
 //	VOUCHRYX_TTL_SECONDS      default 300, capped at one hour
 //	VOUCHRYX_EVENTS_PATH      agent-event NDJSON, optional
@@ -167,25 +168,31 @@ func main() {
 // provider, so the service still calls out to nothing.
 func watchKeySets(cfg config.Config) {
 	files := cfg.TrustedCount() + cfg.WorkloadCount()
+	if cfg.PublishedPath() != "" {
+		files++
+	}
 	switch {
 	case files == 0:
 		return
 	case cfg.KeyReload == 0:
-		log.Printf("vouchryx: VOUCHRYX_JWKS_RELOAD_SECONDS is 0, so the key set of %d issuer(s) is read at start and never again; "+
+		log.Printf("vouchryx: VOUCHRYX_JWKS_RELOAD_SECONDS is 0, so %d key set file(s) are read at start and never again; "+
 			"a provider that rotates its signing key is refused until this restarts", files)
+		if cfg.PublishedPath() != "" {
+			log.Printf("vouchryx: and a change to %s is not published until this restarts", config.PublishedVar)
+		}
 		return
 	}
-	log.Printf("vouchryx: re-reading the key set file of %d issuer(s) every %v", files, cfg.KeyReload)
+	log.Printf("vouchryx: re-reading %d key set file(s) every %v", files, cfg.KeyReload)
 	go func() {
 		for range time.Tick(cfg.KeyReload) {
 			for _, r := range cfg.ReloadKeys() {
 				switch {
 				case r.Err != nil:
-					log.Printf("vouchryx: the key set of %s was not reloaded, the keys already held stay in force: %v", r.Iss, r.Err)
+					log.Printf("vouchryx: %s: the key set of %s was not reloaded, the keys already held stay in force: %v", r.Name, r.Iss, r.Err)
 				case r.Changed:
-					log.Printf("vouchryx: the key set of %s changed in %s, now holding kids %v", r.Iss, r.Path, r.Kids)
+					log.Printf("vouchryx: %s: the key set of %s changed in %s, now holding kids %v", r.Name, r.Iss, r.Path, r.Kids)
 				case r.Recovered:
-					log.Printf("vouchryx: the key set file of %s at %s is usable again", r.Iss, r.Path)
+					log.Printf("vouchryx: %s: the key set file of %s at %s is usable again", r.Name, r.Iss, r.Path)
 				}
 			}
 		}

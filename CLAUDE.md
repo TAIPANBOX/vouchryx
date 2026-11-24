@@ -950,6 +950,57 @@ not a convenience.
     the demo's actor token bound to the holder key); the first three red first
     against 22ad735. Scenarios: `features/delegation.feature`)*
 
+32. **In file mode a rotation publishes the next key before it signs and keeps
+    the previous key published after, and the keys published beside the file key
+    never sign.** `@claude 2026-11-23`: the design is this repository's, open to
+    reversal, following keyryx's invariant 20 (the next key in the set for a
+    publish-ahead time before it signs, the set's cache lifetime at most half of
+    that, the retired key kept so what it signed keeps verifying) at the least
+    surface. `VOUCHRYX_SIGNING_KEYS_PUBLISHED` names a JWK Set file of public keys
+    served after the file key by `/.well-known/jwks.json` and never used to sign:
+    the next key in step one of a rotation, the next and the current key across the
+    restart onto the next one (the file key named there too is served once),
+    nothing once the overlap ends. The file is re-read every
+    `VOUCHRYX_JWKS_RELOAD_SECONDS` with invariant 29's rule, so steps one and three
+    need no restart, and a published key with the file key's kid is the file key
+    and is served once. File mode's key set states `Cache-Control: public,
+    max-age=60`, which the README's publish-ahead is measured against; keyryx mode
+    states none. How long a key has been published is not state this process
+    keeps, so the publish-ahead and the overlap are the operator's (README NOT
+    PROVEN).
+
+    The file is a root of trust for every verifier, so what it may hold is narrow:
+    at most four EC P-256 public keys, each kid its RFC 7638 thumbprint (the kid
+    this service gives its own key), the coordinates canonical and on the curve,
+    no member but `kty`, `crv`, `x`, `y`, `kid`, `use` (only `sig`) and `alg` (only
+    `ES256`), no kid twice, no member beside `keys`, a regular file of at most
+    64 KiB that neither its group nor others can write (read through a symlink,
+    the way a ConfigMap is mounted). Anything else refuses the start naming the
+    variable and the member, never a coordinate or a private value (invariant 8), a
+    private member by name; on a reload
+    it leaves the held set in force. `{"keys":[]}` is allowed, because it is how an
+    overlap ends. The setting with `VOUCHRYX_SIGNER=keyryx` refuses the start:
+    Keyryx publishes the next and retired keys of its own set.
+    *(tests: `TestThePublishedKeysAreReadAndNeverIncludeAPrivateMember`,
+    `TestWithoutTheSettingNothingElseIsPublished`,
+    `TestThePublishedKeysAreBoundedAndAnEmptySetIsAllowed`,
+    `TestAMalformedPublishedKeysFileRefusesToStart`,
+    `TestAPublishedKeysFileOthersCanWriteRefusesToStart`,
+    `TestAnOversizedPublishedKeysFileRefusesToStart`,
+    `TestThePublishedKeysAreRefusedInKeyryxMode`,
+    `TestThePublishedKeysFollowTheirFileAndABrokenFileLeavesThemInForce`,
+    `TestHostilePublishedKeysFilesNeverPanicAndNeverPublishAnInvalidKey`
+    (`internal/config`); `TestAPublishedKeyIsServedAndNeverSigns`,
+    `TestTheActiveKeyInThePublishedSetIsServedOnce`,
+    `TestWithNothingPublishedTheFileKeyIsTheWholeSet`,
+    `TestServingThePublishedSetRacesNothing` (`internal/signer`);
+    `TestARotationOfTheFileKeyKeepsEveryTokenVerifying`,
+    `TestTheFileModeKeySetSaysHowLongItMayBeCached` (`internal/api`);
+    `TestThePublishedKeysFileIsReadByTheRealBinary` (`internal/manifest`, the
+    built binary, red on the unfixed one: it served the file key alone); the rest
+    red first as a build failure. Mutants in README "Testing". Scenarios:
+    `features/signing.feature`)*
+
 ## Distribution
 
 Published as a container image, `ghcr.io/taipanbox/vouchryx`, built by

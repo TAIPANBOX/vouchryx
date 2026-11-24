@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-378-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-412-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -126,7 +126,7 @@ switch, different axis, and the second is the one an incident needs.
 | `POST /v1/revoke` | By `jti` for one token, or by `subject` for every token naming that agent anywhere in its chain: at this door since 2026-09-17, and at the enforcement points from agent-stack-go#61 and tokenfuse#298 on. `actor` and `reason` are required. A `jti` revocation ends one token, not the ones already exchanged from it. With `"ban": true` (a `subject` only) it is also a ban: nothing names that party again until the ban is lifted. A scoped key (`key|rights|prefix` in `VOUCHRYX_REVOKE_KEYS`) does only the rights it names, for subjects under its prefix, never by `jti`; anything else is 403 (invariant 30). |
 | `POST /v1/revoke/lift` | Ends a ban. Same keys as `/v1/revoke`; `subject`, `actor` and `reason` required, and the subject must be banned. It never un-revokes: what the party held when it was banned stays revoked. |
 | `GET /v1/revocations` | What enforcement points poll, with no credential. Carries `as_of`, so an empty list and an unreachable service are not the same answer. Each entry carries only what a verifier needs to refuse a token: `jti`, `subject`, `issued_before`, `expires`. It does **not** carry the `actor` or the `reason` of the revocation: those stay in the operator's record (the event stream and the `VOUCHRYX_REVOCATIONS_PATH` store), so the public list does not say who revoked a token or why. |
-| `GET /.well-known/jwks.json` | Public keys, so verification is offline. |
+| `GET /.well-known/jwks.json` | Public keys, so verification is offline. In file mode the file key first, then the keys `VOUCHRYX_SIGNING_KEYS_PUBLISHED` names, with `Cache-Control: public, max-age=60`. |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata: this service's own endpoints and grants. Names no trusted issuer and no configured client. |
 | `GET /healthz` | With no credential. `200` once the process is listening; in keyryx mode (`VOUCHRYX_SIGNER=keyryx`) `503` until a working key is certified, and while its statement does not verify against the pinned root (the reason is in the log), so it then reads as readiness (see NOT PROVEN). |
 
@@ -220,9 +220,18 @@ VOUCHRYX_TRUSTED_ISSUERS  `iss|aud|jwks-path`, one per line; add `|unbound`
                           marker never admits an actor token with no key
                           (CLAUDE.md invariant 31). The key set file is read
                           again while this runs
+VOUCHRYX_SIGNING_KEYS_PUBLISHED  file mode only: a JWK Set file of public keys
+                          served beside the file key and never signing, the next
+                          key before a rotation and the previous one after it
+                          (CLAUDE.md invariant 32). At most four EC P-256 keys,
+                          each with its RFC 7638 thumbprint as kid, no other
+                          member than kty, crv, x, y, kid, use, alg; `{"keys":[]}`
+                          publishes nothing. Not writable by group or others.
+                          Read again while this runs; refused with keyryx
 VOUCHRYX_JWKS_RELOAD_SECONDS  how often the key set files of the trusted and
-                          the workload issuers are read again, default 30;
-                          0 reads them at start only (CLAUDE.md invariant 29)
+                          the workload issuers, and the published signing keys,
+                          are read again, default 30; 0 reads them at start only
+                          (CLAUDE.md invariant 29)
 VOUCHRYX_TTL_SECONDS      default 300, capped at 3600
 VOUCHRYX_EVENTS_PATH      agent-event NDJSON; unset means nothing is recorded
 VOUCHRYX_REVOCATIONS_PATH revocations kept on disk across a restart; unset,
@@ -256,10 +265,45 @@ A missing or malformed value **aborts the process** and names the variable. A
 token service that came up trusting nothing would issue nothing and look
 healthy; one that came up trusting a default would issue everything.
 
+### Rotating the file key
+
+With `VOUCHRYX_SIGNER=file` the key that signs is `VOUCHRYX_SIGNING_KEY`, read
+at start. A rotation publishes the next key before it signs and keeps the
+previous key published after, so no verifier refuses a token on either side of
+the restart (CLAUDE.md invariant 32):
+
+```sh
+./vouchryx-demo keygen -out next      # next.pem private, next.jwks.json public
+
+# 1. publish the next key beside the current one; no restart, the file is re-read
+cp next.jwks.json /etc/vouchryx/published.jwks.json
+#    VOUCHRYX_SIGNING_KEYS_PUBLISHED=/etc/vouchryx/published.jwks.json
+
+# 2. after the publish-ahead, put BOTH public halves in the file (the next key
+#    and the current one), then restart with the next key signing; the file key
+#    named in the file too is served once, so every replica, restarted or not,
+#    serves both keys throughout
+#    published.jwks.json = {"keys":[<next>, <current>]}, then VOUCHRYX_SIGNING_KEY=next.pem
+
+# 3. after the overlap, publish nothing beside it; no restart
+echo '{"keys":[]}' > /etc/vouchryx/published.jwks.json
+```
+
+With `VOUCHRYX_JWKS_RELOAD_SECONDS=0` the file is read at start only, so steps
+1 and 3 need a restart too.
+
+The publish-ahead in step 2 is at least twice the larger of 60 seconds (the
+`max-age` the key set states) and the slowest verifier's own refresh interval,
+plus `VOUCHRYX_JWKS_RELOAD_SECONDS`. The overlap in step 3 is at least
+`VOUCHRYX_TTL_SECONDS` plus the same refresh terms, so the last token the old
+key signed has expired before the key leaves the set. The file is a root of
+trust for every verifier, so it is refused when its group or others can write
+it, and a private member in it refuses the start rather than being dropped.
+
 ### What an identity provider has to look like
 
 Measured against a real provider (Keycloak 26.8.1, `labs/oidc-keycloak`), the
-trusted-issuer line works as described, with three facts an operator needs:
+trusted-issuer line works as described, with four facts an operator needs:
 
 - **The key set is a file, and a provider rotates its key.** Fetch the
   provider's `jwks_uri` into the file with whatever refreshes things on your
@@ -588,8 +632,21 @@ line, both written every time.
 
 ## Testing
 
-309 tests. Tier T3: these are authorization decisions where a wrong answer is
+326 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
+
+**The published signing keys (invariant 32) were planted with 24 faults, one at
+a time: 23 were caught by a named test.** Every check of the file's reading
+dropped in turn (the member allowlist, the private-member refusal, the
+thumbprint, kty and crv, the coordinate length, the canonical encoding, use,
+alg, a duplicate kid, a member beside `keys`), the bound raised to five, an
+empty set refused, the mode check, the size bound and the keyryx-mode refusal
+dropped, the reload skipping the file or emptying the set on a failed read,
+the published keys not served, the file key served twice, `max-age` 600, the
+lifetime stated in keyryx mode too, and either lock of the key source dropped
+(caught under `-race`). The survivor is the regular-file check made after the
+open: the same check made before the open refuses a directory or a FIFO first,
+so dropping the second one alone changes nothing a test can see.
 
 **The actor credential's key (invariant 31) was planted with 8 faults, one at a
 time: all 8 were caught by a named test.** The unbound-actor check dropped, the
@@ -700,12 +757,16 @@ Stated here rather than left to be discovered.
   `VOUCHRYX_ALLOWED_AUDIENCES` decides which resources a delegation may be
   spent at. Nothing here checks that a listed URL is the resource the operator
   meant, and an audience left off the list is refused, not reconciled.
-- **In file mode the signing key is single.** The published key set holds one
-  key, so a rotation replaces it at once: tokens issued under the old key stop
-  verifying at every verifier that has polled the new set, and no overlap period
-  exists. In keyryx mode Keyryx publishes the working key's current and next
-  keys, and this service serves that set as it gets it; the overlap is Keyryx's
-  to keep, and the tests here use a fake custody, not Keyryx.
+- **In file mode the publish-ahead and the overlap are the operator's to keep.**
+  `VOUCHRYX_SIGNING_KEYS_PUBLISHED` publishes the next and the previous key
+  beside the file key (see "Rotating the file key"), but the process keeps no
+  state that says how long a key has been published, so a restart onto a key
+  published a second earlier is not refused. A key in that file is published
+  whether or not anybody holds its private half: the kid being its thumbprint
+  names the key, it does not prove possession. In keyryx mode Keyryx publishes
+  the working key's current and next keys, and this service serves that set as
+  it gets it; the overlap is Keyryx's to keep, and the tests here use a fake
+  custody, not Keyryx.
 - **The working key is renewed at half its life.** For the 72-hour statement
   that is every 36 hours. The wave-2 decision names a daily renewal; keyclient
   renews at half the statement's life, and a 48-hour statement would give a

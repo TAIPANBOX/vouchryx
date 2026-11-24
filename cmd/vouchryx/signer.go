@@ -19,7 +19,15 @@ import (
 // nothing, and health says so (CLAUDE.md invariant 27).
 func buildSigner(cfg config.Config) (signer.Signer, error) {
 	if cfg.Signer != "keyryx" {
-		return signer.NewFile(cfg.SigningKey, cfg.KeyID)
+		if p := cfg.PublishedPath(); p != "" {
+			var kids []string
+			for _, k := range cfg.PublishedKeys() {
+				kids = append(kids, k.Kid)
+			}
+			log.Printf("vouchryx: signing with the file key %s; published beside it from %s, never signing: %v",
+				cfg.KeyID, p, kids)
+		}
+		return signer.NewFilePublishing(cfg.SigningKey, cfg.KeyID, cfg.PublishedKeys)
 	}
 	kc, err := keyclient.New(keyclient.Config{
 		BaseURL:    cfg.Keyryx.BaseURL,

@@ -138,9 +138,23 @@ func (s *Server) now() time.Time {
 // key's public half (invariant 27). Only public members are built, by
 // `delegation.FromPublic`'s signature, so a private key cannot reach this
 // response (invariant 9).
+//
+// In file mode the answer says how long it may be cached (invariant 32). A key
+// set with no lifetime is cached by heuristic, for as long as a cache likes, and
+// a rotation's publish-ahead can only be measured against a lifetime somebody
+// stated. Keyryx mode serves Keyryx's set on Keyryx's schedule and states none.
 func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
+	if s.Cfg.Signer != "keyryx" {
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", int(FileKeySetMaxAge.Seconds())))
+	}
 	writeJSON(w, http.StatusOK, s.Signer.Public())
 }
+
+// FileKeySetMaxAge is the cache lifetime the file mode key set states. A
+// rotation's publish-ahead is at least twice the larger of this and the slowest
+// verifier's refresh, plus VOUCHRYX_JWKS_RELOAD_SECONDS (README, "Rotating the
+// file key"), so this is at most half of it, keyryx's invariant 20.
+const FileKeySetMaxAge = 60 * time.Second
 
 // revocations is the list enforcement points poll, with no credential.
 //
