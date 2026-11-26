@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-412-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-478-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -632,7 +632,7 @@ line, both written every time.
 
 ## Testing
 
-326 tests. Tier T3: these are authorization decisions where a wrong answer is
+367 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **The published signing keys (invariant 32) were planted with 24 faults, one at
