@@ -33,6 +33,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -51,19 +52,26 @@ import (
 var version = "dev"
 
 func main() {
+	os.Exit(run(os.Stderr, func(s *http.Server) error { return s.ListenAndServe() }))
+}
+
+// run starts the service and returns the process's exit code: 2 when it
+// refuses to start, 1 when serve fails. serve is handed the configured server;
+// main's listens on its address.
+func run(stderr io.Writer, serve func(*http.Server) error) int {
 	cfg, err := config.FromEnv()
 	if err != nil {
 		// Refusing to start beats starting wrong. A token service that came up
 		// trusting nothing would issue nothing and look healthy; one that came
 		// up trusting a default would issue everything.
-		fmt.Fprintf(os.Stderr, "vouchryx: refusing to start: %v\n", err)
-		os.Exit(2)
+		fmt.Fprintf(stderr, "vouchryx: refusing to start: %v\n", err)
+		return 2
 	}
 
 	sg, err := buildSigner(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "vouchryx: refusing to start: %v\n", err)
-		os.Exit(2)
+		fmt.Fprintf(stderr, "vouchryx: refusing to start: %v\n", err)
+		return 2
 	}
 	revs := revoke.New()
 	srv := &api.Server{
@@ -81,16 +89,16 @@ func main() {
 	if cfg.RevocationsPath != "" {
 		st, got, err := revoke.OpenStore(cfg.RevocationsPath, time.Now())
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "vouchryx: refusing to start: %v\n", err)
-			os.Exit(2)
+			fmt.Fprintf(stderr, "vouchryx: refusing to start: %v\n", err)
+			return 2
 		}
 		// Every active entry, and every ban that still stands after its own
 		// revocation half expired (invariant 25): a restart that restored the
 		// first and not the second would let a stopped agent back in.
 		for _, e := range append(append([]revoke.Entry{}, got.Active...), got.Standing...) {
 			if err := revs.Add(e); err != nil {
-				fmt.Fprintf(os.Stderr, "vouchryx: refusing to start: restoring %s: %v\n", cfg.RevocationsPath, err)
-				os.Exit(2)
+				fmt.Fprintf(stderr, "vouchryx: refusing to start: restoring %s: %v\n", cfg.RevocationsPath, err)
+				return 2
 			}
 		}
 		if got.TornTail {
@@ -111,8 +119,8 @@ func main() {
 	if cfg.EventsPath != "" {
 		w, err := event.NewWriter(cfg.EventsPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "vouchryx: refusing to start: events path %s: %v\n", cfg.EventsPath, err)
-			os.Exit(2)
+			fmt.Fprintf(stderr, "vouchryx: refusing to start: events path %s: %v\n", cfg.EventsPath, err)
+			return 2
 		}
 		defer func() { _ = w.Close() }()
 		srv.Events = w
@@ -156,9 +164,11 @@ func main() {
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("vouchryx: %v", err)
+	if err := serve(server); err != nil {
+		log.Printf("vouchryx: %v", err)
+		return 1
 	}
+	return 0
 }
 
 // watchKeySets reads the key set files of the trusted and workload issuers
@@ -185,18 +195,24 @@ func watchKeySets(cfg config.Config) {
 	log.Printf("vouchryx: re-reading %d key set file(s) every %v", files, cfg.KeyReload)
 	go func() {
 		for range time.Tick(cfg.KeyReload) {
-			for _, r := range cfg.ReloadKeys() {
-				switch {
-				case r.Err != nil:
-					log.Printf("vouchryx: %s: the key set of %s was not reloaded, the keys already held stay in force: %v", r.Name, r.Iss, r.Err)
-				case r.Changed:
-					log.Printf("vouchryx: %s: the key set of %s changed in %s, now holding kids %v", r.Name, r.Iss, r.Path, r.Kids)
-				case r.Recovered:
-					log.Printf("vouchryx: %s: the key set file of %s at %s is usable again", r.Name, r.Iss, r.Path)
-				}
-			}
+			logReloads(cfg)
 		}
 	}()
+}
+
+// logReloads is one pass of the watcher: every key set file read again, and
+// what changed, failed or recovered said once.
+func logReloads(cfg config.Config) {
+	for _, r := range cfg.ReloadKeys() {
+		switch {
+		case r.Err != nil:
+			log.Printf("vouchryx: %s: the key set of %s was not reloaded, the keys already held stay in force: %v", r.Name, r.Iss, r.Err)
+		case r.Changed:
+			log.Printf("vouchryx: %s: the key set of %s changed in %s, now holding kids %v", r.Name, r.Iss, r.Path, r.Kids)
+		case r.Recovered:
+			log.Printf("vouchryx: %s: the key set file of %s at %s is usable again", r.Name, r.Iss, r.Path)
+		}
+	}
 }
 
 // bindWarning says something when this binds somewhere the whole network can
