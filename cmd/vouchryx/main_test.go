@@ -288,11 +288,26 @@ func TestTheEventsFileIsOpenedAtStartAndOneThatCannotBeRefusesToStart(t *testing
 	captureLog(t)
 	path := filepath.Join(t.TempDir(), "events.ndjson")
 	t.Setenv("VOUCHRYX_EVENTS_PATH", path)
-	if srv, code, stderr := started(t, errors.New("stop")); srv == nil {
-		t.Fatalf("exit %d: %s", code, stderr)
+	t.Setenv("VOUCHRYX_REVOKE_KEYS", "revoke-key-0123456789abcdef0123456789")
+	// The request is made from inside serve: once serve returns, run closes the
+	// events file on its way out, as the process does.
+	status := 0
+	var stderrBuf bytes.Buffer
+	code := run(&stderrBuf, func(s *http.Server) error {
+		req := httptest.NewRequest(http.MethodPost, "/v1/revoke", strings.NewReader(
+			`{"subject":"agent://acme.example/agents/triage","actor":"ops","reason":"incident 7"}`))
+		req.Header.Set("Authorization", "Bearer revoke-key-0123456789abcdef0123456789")
+		rec := httptest.NewRecorder()
+		s.Handler.ServeHTTP(rec, req)
+		status = rec.Code
+		return errors.New("stop")
+	})
+	if status != http.StatusOK {
+		t.Fatalf("the revocation answered %d; exit %d: %s", status, code, stderrBuf.String())
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("VOUCHRYX_EVENTS_PATH was set and the file was never opened: %v", err)
+	raw, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(raw), "delegation_revoked") {
+		t.Fatalf("VOUCHRYX_EVENTS_PATH was set and the revocation is not in it: %v %q", err, raw)
 	}
 
 	t.Setenv("VOUCHRYX_EVENTS_PATH", filepath.Join(t.TempDir(), "no-such-dir", "events.ndjson"))
