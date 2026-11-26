@@ -1021,3 +1021,11 @@ The version a binary reports (`main.version` in both `cmd/vouchryx` and
 name; `vouchryx` logs it once at startup, `vouchryx-demo version` prints it.
 This is a diagnostic, not a security property, exactly like the rest of
 `vouchryx-demo` (see "What this is" and the demo tool's own doc comment).
+
+## Coverage floor
+
+Total test coverage measured in CI may not fall below the number in `.coverage-floor`, and that number may only rise: it was set to the first CI measurement minus one point, and is raised when coverage rises. The total and the slack are printed in the job summary. *(gate: `scripts/coverage-floor.sh check` and `ratchet` in CI; teeth cases in `scripts/gates-have-teeth.sh`)*
+
+## Mutation testing
+
+A weekly run (`.github/workflows/mutation.yml`, Sundays, also by hand with `workflow_dispatch`) breaks the product code one fault at a time with gremlins v0.6.0 and puts the count of killed and surviving mutants on the run page. Measured, not gated: no score is required yet.
