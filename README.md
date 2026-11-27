@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/vouchryx/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)
-![tests](https://img.shields.io/badge/tests-412-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-478-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Status](https://img.shields.io/badge/runtime%20dependencies-1-blue.svg)
 
@@ -632,7 +632,7 @@ line, both written every time.
 
 ## Testing
 
-326 tests. Tier T3: these are authorization decisions where a wrong answer is
+367 tests. Tier T3: these are authorization decisions where a wrong answer is
 silent.
 
 **The published signing keys (invariant 32) were planted with 24 faults, one at
@@ -708,6 +708,21 @@ change), `config` 94.4% (93.8%), `revoke` 87.8% (86.8%), `xaa` 95.0% and
 `demo` 72.4%, both unchanged. What stays uncovered in the new code is the same
 kind of branch: a bad random source and a signing failure in
 `tokenClientCredentials`.
+
+Re-measured 2026-11-27 in CI, the number `.coverage-floor` holds
+(`go test -race -coverprofile ./...`, the `total:` line of `go tool cover
+-func`): 91.5% of statements, up from 72.6%. Most of the gap was three
+packages with no tests, which count as 0%: `cmd/vouchryx` and
+`cmd/vouchryx-demo` now start through a `run` function the tests drive with an
+operator's environment and arguments (82.7% and 93.0%), and
+`internal/keyryxtest` (92.4%) is held to keyryx's own refusals, because every
+keyryx-mode test here runs against it. **36 faults were planted in the
+code these tests cover, one at a time, and every one was caught by a named
+test**; one of them, an input token's array `aud` matched by prefix, survived
+the whole earlier suite. What stays uncovered is mostly a bad random source, a
+signing or marshalling failure, a disk that fails mid-write, and the loop in
+`main` that only a ticking clock reaches (the real-binary test in
+`internal/manifest` runs it).
 
 ```bash
 go test ./... -race

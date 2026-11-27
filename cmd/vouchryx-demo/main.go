@@ -22,6 +22,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -38,37 +39,45 @@ import (
 var version = "dev"
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
-	}
-	var err error
-	switch os.Args[1] {
-	case "keygen":
-		err = keygen(os.Args[2:])
-	case "exchange":
-		err = exchange(os.Args[2:])
-	case "proof":
-		err = proof(os.Args[2:])
-	case "xaa":
-		err = xaaCmd(os.Args[2:])
-	case "version":
-		fmt.Println("vouchryx-demo", version)
-		return
-	case "-h", "--help", "help":
-		usage()
-		return
-	default:
-		err = fmt.Errorf("unknown command %q", os.Args[1])
-	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "vouchryx-demo: "+err.Error())
-		os.Exit(1)
-	}
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `vouchryx-demo mints what a caller of this service needs.
+// run is the command line with its arguments (without the program name) and
+// its two streams, and returns the exit code: 2 with no command, 1 when the
+// command fails.
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		usage(stderr)
+		return 2
+	}
+	var err error
+	switch args[0] {
+	case "keygen":
+		err = keygen(args[1:], stdout)
+	case "exchange":
+		err = exchange(args[1:], stdout)
+	case "proof":
+		err = proof(args[1:], stdout)
+	case "xaa":
+		err = xaaCmd(args[1:], stdout)
+	case "version":
+		fmt.Fprintln(stdout, "vouchryx-demo", version)
+		return 0
+	case "-h", "--help", "help":
+		usage(stderr)
+		return 0
+	default:
+		err = fmt.Errorf("unknown command %q", args[0])
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "vouchryx-demo: "+err.Error())
+		return 1
+	}
+	return 0
+}
+
+func usage(w io.Writer) {
+	fmt.Fprint(w, `vouchryx-demo mints what a caller of this service needs.
 
   keygen   -out <prefix> [-kid <kid>]
       Writes <prefix>.pem (private, mode 600) and <prefix>.jwks.json (public),
@@ -107,7 +116,7 @@ func usage() {
 `)
 }
 
-func keygen(args []string) error {
+func keygen(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
 	out := fs.String("out", "", "path prefix for <prefix>.pem and <prefix>.jwks.json")
 	kid := fs.String("kid", "", "key id for the published set (default: the key's RFC 7638 thumbprint)")
@@ -135,11 +144,11 @@ func keygen(args []string) error {
 	if err := demo.WriteJWKS(*out+".jwks.json", &key.PublicKey, name); err != nil {
 		return err
 	}
-	fmt.Printf("%s.pem\t\tprivate, mode 600\n%s.jwks.json\tpublic, kid %s\n", *out, *out, name)
+	fmt.Fprintf(stdout, "%s.pem\t\tprivate, mode 600\n%s.jwks.json\tpublic, kid %s\n", *out, *out, name)
 	return nil
 }
 
-func exchange(args []string) error {
+func exchange(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("exchange", flag.ContinueOnError)
 	url := fs.String("url", "", "the vouchryx origin, e.g. http://127.0.0.1:4310; "+
 		"must equal VOUCHRYX_ISSUER, the base the service checks the proof's htu against")
@@ -192,11 +201,11 @@ func exchange(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(tok)
+	fmt.Fprintln(stdout, tok)
 	return nil
 }
 
-func proof(args []string) error {
+func proof(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("proof", flag.ContinueOnError)
 	keyPath := fs.String("key", "", "PEM EC private key, the one the token is bound to")
 	htm := fs.String("htm", "POST", "the HTTP method this proof is for")
@@ -221,11 +230,11 @@ func proof(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(p)
+	fmt.Fprintln(stdout, p)
 	return nil
 }
 
-func xaaCmd(args []string) error {
+func xaaCmd(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("xaa", flag.ContinueOnError)
 	url := fs.String("url", "", "the vouchryx origin, e.g. http://127.0.0.1:4310")
 	idpKey := fs.String("idp-key", "", "PEM EC private key of the demo identity provider")
@@ -264,6 +273,6 @@ func xaaCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(tok)
+	fmt.Fprintln(stdout, tok)
 	return nil
 }
