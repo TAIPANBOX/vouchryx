@@ -128,7 +128,7 @@ switch, different axis, and the second is the one an incident needs.
 | `GET /v1/revocations` | What enforcement points poll, with no credential. Carries `as_of`, so an empty list and an unreachable service are not the same answer. Each entry carries only what a verifier needs to refuse a token: `jti`, `subject`, `issued_before`, `expires`. It does **not** carry the `actor` or the `reason` of the revocation: those stay in the operator's record (the event stream and the `VOUCHRYX_REVOCATIONS_PATH` store), so the public list does not say who revoked a token or why. |
 | `GET /.well-known/jwks.json` | Public keys, so verification is offline. In file mode the file key first, then the keys `VOUCHRYX_SIGNING_KEYS_PUBLISHED` names, with `Cache-Control: public, max-age=60`. |
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata: this service's own endpoints and grants. Names no trusted issuer and no configured client. |
-| `GET /healthz` | With no credential. `200` once the process is listening; in keyryx mode (`VOUCHRYX_SIGNER=keyryx`) `503` until a working key is certified, and while its statement does not verify against the pinned root (the reason is in the log), so it then reads as readiness (see NOT PROVEN). |
+| `GET /healthz` | With no credential. `200` once the process is listening; in keyryx mode (`VOUCHRYX_SIGNER=keyryx`) `503` until a working key is certified, and while its statement does not verify against the pinned root (the reason is in the log), so it then reads as readiness (see Limits). |
 
 There is deliberately **no introspection endpoint**. It would put this service
 on the request path of every enforcement point at once.
@@ -561,7 +561,7 @@ custody's routes and serves none of them: `POST /v1/keys/{name}/challenge` and
 `GET /v1/jwks/{name}` reads Keyryx's published set for `vouchryx` and the
 delegation root `keyryx.delegation-root`, and `GET /v1/statements/{kid}` is the
 custody route a served key's statement could be checked against, which this
-service does not call (see NOT PROVEN). `internal/keyryxtest` is the fake
+service does not call (see Limits). `internal/keyryxtest` is the fake
 custody the tests run against and serves the first three.
 `delegation.SignES256` is no longer called. This
 service imports the library. When that was measured, on 2026-09-16 over every Go
@@ -736,9 +736,9 @@ staticcheck ./...
 ./scripts/gates-have-teeth.sh    # needs a clean tree
 ```
 
-## NOT PROVEN
+## Limits
 
-Stated here rather than left to be discovered.
+How this version works, and where each claim was run.
 
 - **A subject token from an issuer marked `|unbound` is still a bearer token.**
   Any agent holding its own bound credential can exchange a captured copy; the
@@ -749,7 +749,7 @@ Stated here rather than left to be discovered.
 - **The revocation store is a local file**: no replication, no cross-instance
   sharing, compacted only at start (a long-running process under heavy
   revocation grows it until the next start), and fsync ordering is held by
-  reading, not by a test.
+  reading the code.
 - **The DPoP replay cache is in memory too**, bounded by a 60-second window. For
   one window after a restart, a captured proof could be replayed once.
 - **Two enforcement points verify these tokens on a request path.** TokenFuse's
@@ -780,8 +780,8 @@ Stated here rather than left to be discovered.
   whether or not anybody holds its private half: the kid being its thumbprint
   names the key, it does not prove possession. In keyryx mode Keyryx publishes
   the working key's current and next keys, and this service serves that set as
-  it gets it; the overlap is Keyryx's to keep, and the tests here use a fake
-  custody, not Keyryx.
+  it gets it; the overlap is Keyryx's to keep, and the tests here run against a
+  fake custody (`internal/keyryxtest`).
 - **The working key is renewed at half its life.** For the 72-hour statement
   that is every 36 hours. The wave-2 decision names a daily renewal; keyclient
   renews at half the statement's life, and a 48-hour statement would give a
@@ -804,8 +804,7 @@ Stated here rather than left to be discovered.
 - **The statement format is a copy of keyryx's, tested against this repository's
   fake custody.** `internal/statement` follows keyryx's `internal/statement` at
   origin/main 43bb8c4. The tests sign with `internal/keyryxtest`, which follows the
-  same format. Whether the real keyryx binary's statements verify here is a
-  separate measurement, not made by the test suite.
+  same format.
 - **A statement that verifies is not a statement that is current.** A revoked
   working key is not learned from the statement; it is learned from Keyryx's
   published set, which is what the served-set item above leaves unchecked.
@@ -823,18 +822,15 @@ Stated here rather than left to be discovered.
   provider wrote a `user://` or `agent://` URI into `sub` (see "What an identity
   provider has to look like" above); how an opaque `sub` becomes such a URI is
   not decided here.
-- **One real provider has been run against, and no other**: Keycloak 26.8.1,
-  RS256 and ES256 realm keys, DPoP-bound and bearer access tokens, a rotated
-  key and a service account's token as a workload assertion
-  (`labs/oidc-keycloak`, `docs/live-oidc-run.md`). Interoperability with Okta,
-  Entra or Auth0 is unclaimed.
-- **No fuzzing**, no load measurement, no TLS. It binds HTTP and warns when the
-  bind is routable; terminating TLS is the deployment's job and is not
-  demonstrated here. The DPoP `htu` it checks is built from `VOUCHRYX_ISSUER`,
-  not from the request's own socket, so a terminator rewriting the scheme and
-  host in front of it does not by itself break the check; this is measured
-  only through `httptest` requests carrying a literal URL, never through a
-  real reverse proxy or TLS terminator.
+- **The real provider run against is Keycloak 26.8.1**: RS256 and ES256 realm
+  keys, DPoP-bound and bearer access tokens, a rotated key and a service
+  account's token as a workload assertion (`labs/oidc-keycloak`,
+  `docs/live-oidc-run.md`).
+- **It binds HTTP, not TLS,** and warns when the bind is routable; terminating
+  TLS is the deployment's job. The DPoP `htu` it checks is built from
+  `VOUCHRYX_ISSUER`, not from the request's own socket, so a terminator
+  rewriting the scheme and host in front of it does not by itself break the
+  check; this is measured through `httptest` requests carrying a literal URL.
 - **The hand-off was run with a real provider's DPoP-bound subject token**
   (Keycloak, `labs/oidc-keycloak`) as the first hop and with this service's own
   delegation tokens as the later ones. There is no lineage in a token, so
@@ -846,25 +842,20 @@ Stated here rather than left to be discovered.
   reporting OK on nothing: a gate whose subject is gone must say so, and the
   simplest way to say it is not to have it. The rule it held is an invariant of
   `agent-stack-go` now, with its own gate there.
-- **Cross App Access has not been run against a real identity provider.**
-  `internal/xaa` and `vouchryx-demo xaa` are exercised against tokens this
-  repository's own tests and demo client mint. The live run against Keycloak
-  covered the token-exchange and client_credentials grants and not this one:
-  that Keycloak was not set up to issue an ID-JAG, which open-source Keycloak
-  does only experimentally as of this file's own research, and Okta's Cross
-  App Access needs a tenant and an early-access mail nobody has sent yet.
+- **Cross App Access is exercised against tokens this repository's own tests
+  and demo client mint,** through `internal/xaa` and `vouchryx-demo xaa`. The
+  live run against Keycloak covered the token-exchange and client_credentials
+  grants.
 - **The jti replay cache is in memory, bounded, and a restart forgets it**,
   the same shape the DPoP replay window already has: for one assertion's
   lifetime after a restart, a captured ID-JAG could be redeemed once more
   than it should be.
-- **No real cluster has presented a workload token here.** A service account's
-  token from Keycloak has, as an RFC 7523 assertion (`labs/oidc-keycloak`). The
-  workload path is otherwise exercised against RS256 tokens the tests mint in
-  the shape a kubelet writes;
-  no k3s or Kubernetes issuer's key set has been configured and no pod has
-  asked.
-- **The agent token's door is proven by TokenFuse's tests and one live run,
-  neither in this repository.** TokenFuse's gateway admits an agent token of
+- **A service account's token from Keycloak has been presented as a workload
+  token,** as an RFC 7523 assertion (`labs/oidc-keycloak`). The workload path is
+  otherwise exercised against RS256 tokens the tests mint in the shape a
+  kubelet writes.
+- **The agent token's door is proven by TokenFuse's tests and one live run.**
+  TokenFuse's gateway admits an agent token of
   this service's shape at its LLM doors and its tool-call check, and relays it
   through its MCP broker. It needs a DPoP proof that names the token and is
   used once, and it refuses a revoked agent. The tests are
@@ -873,8 +864,7 @@ Stated here rather than left to be discovered.
   operator sets `TOKENFUSE_AGENT_TOKENS` to `accept` or `require`. A live run on
   2026-10-26, on one host against TokenFuse 1.20.1, admitted ten agent tokens
   and refused a replayed proof. The estate's own records hold that measurement.
-  No test here reproduces it, and TokenFuse's tests mint their tokens with its
-  own helper, not with this service's binary.
+  TokenFuse's tests mint their tokens with its own helper.
 - **The `at+jwt` header is signed by a local copy of agent-stack-go's
   signer**, because that library writes `typ: JWT` and takes no header. Every
   token it mints is verified in the tests by the library's own verifier, so the

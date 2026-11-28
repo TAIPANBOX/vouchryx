@@ -24,7 +24,7 @@ var ErrReplayCacheFull = errors.New("xaa: the replay cache is at its ceiling")
 
 // ReplayCache is the bounded, in-memory jti replay cache the plan calls for:
 // keyed by issuer and jti, pruned at each entry's own exp. A restart forgets
-// it, which is a named limitation (README NOT PROVEN) rather than a defect:
+// it, which is a named limitation (README Limits) rather than a defect:
 // making it durable would put a store on the request path of every XAA
 // redemption, the same trade the DPoP replay window in agent-stack-go
 // already makes and documents.

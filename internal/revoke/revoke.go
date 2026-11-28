@@ -22,7 +22,7 @@
 // The reason both sentences are kept rather than replaced: a status line about
 // what nobody has built yet is true for as long as it takes somebody to build
 // it, and nothing makes it announce that it has expired. Anyone reading this
-// package should date what it claims, here and in the README's NOT PROVEN
+// package should date what it claims, here and in the README's Limits
 // section, against the code it names.
 //
 // # Why this is the point of the whole service
@@ -131,7 +131,7 @@ func Public(entries []Entry) []PublicEntry {
 // In memory, and said plainly rather than implied: a restart forgets, and every
 // revoked token whose `exp` has not passed becomes live again. That is the one
 // property here that needs a store before this service is trusted with a real
-// incident, and it is in the README under NOT PROVEN rather than left for
+// incident, and it is in the README under Limits rather than left for
 // somebody to find during one.
 type List struct {
 	mu      sync.Mutex

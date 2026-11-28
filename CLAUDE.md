@@ -2,11 +2,11 @@
 
 Process and invariants only. **No status**: status goes stale and a stale
 instruction file is worse than none. For where the code is, read the tests and
-`README.md`'s NOT PROVEN section.
+`README.md`'s Limits section.
 
 ## Read before you change anything
 
-1. `README.md`, and specifically NOT PROVEN. Three of the entries there are
+1. `README.md`, and specifically Limits. Three of the entries there are
    properties somebody will otherwise assume this service has.
 2. **agent-passport SPEC**, sections 2, 5 and 6.2. This service exists because
    section 2 disclaims proof-of-possession and freshness; section 5 defines the
@@ -737,7 +737,7 @@ not a convenience.
     `@claude 2026-10-18`: the rest is this repository's design, open to reversal:
     the renewal point (keyclient's rule, half the statement's life, which for 72
     hours is every 36 hours, not the daily cadence the decision names: README
-    NOT PROVEN), the file key published but never used during the overlap, the
+    Limits), the file key published but never used during the overlap, the
     refusal and the failed health answer while no key is valid, and the one
     signing seam.
 
@@ -778,7 +778,7 @@ not a convenience.
     already takes. The root's keys are read once from custody and each is accepted
     only if its kid is the thumbprint of that key and the kid is pinned, so the
     channel carries the bytes and the pin decides. Where the root comes from is the
-    part the owner has not yet ruled on (README NOT PROVEN).
+    part the owner has not yet ruled on (README Limits).
 
     A statement is a JWS with exactly two signatures, ES384 and ML-DSA-65, each over
     `protected "." payload`, and both must verify under a pinned root key that the
