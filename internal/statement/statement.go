@@ -7,7 +7,7 @@
 // The format is keyryx's (internal/statement at origin/main 43bb8c4, invariant
 // 24), copied here because the one decision a statement carries, that a key may
 // sign, is not one this service can leave to keyclient, which checks the claims
-// and says in its own NOT PROVEN list that it does not check the root's signatures.
+// and says in its own list of limits that it does not check the root's signatures.
 //
 // The root is PINNED: the operator names its kids, and a kid is the thumbprint of
 // its key, so a key set read from custody can add nothing the pin did not name.
